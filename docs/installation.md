@@ -8,15 +8,20 @@ directly and does not need a local index.
 
 ## Requirements
 
-- Python 3.10 or later; CI covers 3.10–3.12 on Linux and 3.12 on macOS.
+- Python 3.10 or later; CI covers 3.10–3.12 on Linux and 3.12 on macOS,
+  with a separate native Windows installation job on 3.12.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) for the commands below.
 - Thunderbird for account settings and, for local search, downloaded messages.
 - A working system keyring for stored IMAP/SMTP credentials.
 
 Linux is the primary tested desktop. macOS has profile discovery and automated
 package/setup checks, but a successful CI run does not verify a real Thunderbird
-desktop, keychain, and AI-client combination. Native Windows installation is
-not yet verified; the generated launchers currently use a POSIX shell.
+desktop, keychain, and AI-client combination. Current source includes native
+Windows profile discovery, terminal launchers and direct Python MCP startup.
+Windows CI exercises a synthetic installed-wheel workflow; actual Windows
+Thunderbird/provider/client combinations still need independent desktop checks.
+Version 0.3.1 predates this Windows setup support; use the current checkout until
+a release containing it is published.
 
 ## Install from a checkout
 
@@ -127,6 +132,49 @@ across sessions; relative paths depend on each process's working directory.
 
 Client configuration paths are listed in the [README](../README.md#start-using-it).
 Credentials stay in the system keyring and are not written to those files.
+
+## Native Windows setup
+
+In PowerShell, after installing Python and uv:
+
+```powershell
+git clone https://github.com/jamessi1989/thunderbirdmcp.git
+Set-Location thunderbirdmcp
+uv sync --locked
+uv run thunderbird-mcp-setup --clients codex claude opencode
+uv run thunderbird-mcp-setup --clients codex claude opencode --apply
+uv run tbmail accounts
+uv run tbmail reindex
+```
+
+Profile discovery uses `%APPDATA%\Thunderbird\profiles.ini`, as described in
+[Thunderbird's profile documentation](https://support.mozilla.org/en-US/kb/profiles-where-thunderbird-stores-user-data).
+For a different profile, set `$env:TB_PROFILE = 'C:\path\to\profile'` before
+starting the CLI or client. Windows setup puts terminal `.cmd` launchers and
+Python entry scripts in `%LOCALAPPDATA%\thunderbird-mcp\bin`; add that folder to
+PATH or use `uv run tbmail` in the checkout. MCP entries execute the chosen
+Python interpreter directly, preserving argument boundaries and the caller's
+working directory. They do not depend on a shell or a `.cmd` file association.
+
+Installed-wheel data defaults to
+`%LOCALAPPDATA%\thunderbird-mcp\mail-index.sqlite`; the fallback is
+`%USERPROFILE%\AppData\Local`. An absolute `XDG_DATA_HOME` or `TB_MAIL_INDEX_DB`
+still takes precedence. Source checkouts retain their existing index path.
+Config files and backups use the Windows user directory's inherited ACL;
+POSIX permission bits do not represent Windows ACL guarantees.
+
+The existing `password-set` and OAuth commands use Python keyring's
+[Windows Credential Locker backend](https://keyring.readthedocs.io/en/latest/).
+Run them under the same logged-in Windows account as your AI client. CI imports
+the native backend but uses a null keyring for application checks; it does not
+prove that a particular desktop login can access its credentials.
+
+`scripts/test_windows_install.py --wheel PATH --constraints REQUIREMENTS`
+creates a fresh environment, discovers a synthetic Windows profile, exercises
+the native launcher and real stdio MCP search/read/reference/draft workflow, and
+checks that the source profile is unchanged. Dependency installation can access
+the package index; subsequent application checks block external connections.
+No live message is sent.
 
 If automatic profile discovery selects the wrong profile, set `TB_PROFILE` to
 the directory containing Thunderbird's `prefs.js`. Thunderbird's Troubleshooting

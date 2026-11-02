@@ -119,6 +119,10 @@ def default_db_path() -> Path:
     override_root = os.environ.get("XDG_DATA_HOME")
     if override_root and Path(override_root).expanduser().is_absolute():
         data = Path(override_root).expanduser()
+    elif sys.platform == "win32":
+        windows_root = os.environ.get("LOCALAPPDATA")
+        data = (Path(windows_root).expanduser() if windows_root and Path(windows_root).expanduser().is_absolute()
+                else Path.home() / "AppData" / "Local")
     elif sys.platform == "darwin":
         data = Path.home() / "Library" / "Application Support"
     else:

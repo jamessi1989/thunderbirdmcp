@@ -124,17 +124,37 @@ def _json_set(raw: str, keys: tuple[str, ...], value: Any) -> str:
     return result
 
 
-def _launcher(python: Path, module: str, project: Path) -> str:
+def _entrypoint_program(module: str, project: Path) -> str:
     # Import from the project without cd: callers' attachment paths stay relative
     # to their terminal. Avoid uv startup and dependence on a client's PATH.
-    program = (
+    return (
         "import runpy,sys; "
         f"sys.path.insert(0, {str(project)!r}); "
         "from thunderbird_mcp.runtime import configure_session_environment; "
         "configure_session_environment(); "
         f"runpy.run_module({module!r}, run_name='__main__')"
     )
-    return "#!/bin/sh\n# Managed by thunderbird-mcp-setup.\nexec " + shlex.quote(str(python)) + " -c " + shlex.quote(program) + ' "$@"\n'
+
+
+def _launcher(python: Path, module: str, project: Path) -> str:
+    return "#!/bin/sh\n# Managed by thunderbird-mcp-setup.\nexec " + shlex.quote(str(python)) + " -c " + shlex.quote(_entrypoint_program(module, project)) + ' "$@"\n'
+
+
+def _windows_launcher(python: Path, script: Path) -> str:
+    # Percent is expansion syntax even inside cmd.exe quotes. Disable delayed
+    # expansion so literal ! in installation paths remains intact too. MCP
+    # clients execute python.exe directly and do not traverse this shell shim.
+    executable = str(python).replace("%", "%%")
+    target = str(script).replace("%", "%%")
+    return f'@echo off\r\nsetlocal DisableDelayedExpansion\r\n"{executable}" "{target}" %*\r\n'
+
+
+def _bin_dir(home: Path, use_env: bool) -> Path:
+    if sys.platform != "win32":
+        return home / ".local/bin"
+    local = os.environ.get("LOCALAPPDATA") if use_env else None
+    data = Path(local).expanduser() if local and Path(local).expanduser().is_absolute() else home / "AppData/Local"
+    return data / "thunderbird-mcp/bin"
 
 
 def _read(path: Path) -> bytes | None:
@@ -174,8 +194,9 @@ def _client_path(client: str, home: Path, use_env: bool) -> Path:
     return home / ".gemini/settings.json"
 
 
-def _client_update(client: str, raw: str, command: str) -> tuple[str, list[str]]:
+def _client_update(client: str, raw: str, command: str, args: list[str] | None = None) -> tuple[str, list[str]]:
     notes: list[str] = []
+    args = list(args or [])
     if client == "codex":
         doc = tomlkit.parse(raw)
         servers = doc.setdefault("mcp_servers", tomlkit.table())
@@ -187,7 +208,7 @@ def _client_update(client: str, raw: str, command: str) -> tuple[str, list[str]]
         for name in ("url", "bearer_token_env_var", "http_headers", "env_http_headers", "oauth"):
             entry.pop(name, None)
         entry["command"] = command
-        entry["args"] = []
+        entry["args"] = args
         entry["enabled"] = True
         entry["startup_timeout_sec"] = 30
         entry["tool_timeout_sec"] = 180
@@ -203,10 +224,10 @@ def _client_update(client: str, raw: str, command: str) -> tuple[str, list[str]]
     for name in ("url", "serverUrl", "httpUrl", "headers", "oauth"):
         entry.pop(name, None)
     if client == "opencode":
-        entry.update(type="local", command=[command], enabled=True, timeout=180000)
+        entry.update(type="local", command=[command, *args], enabled=True, timeout=180000)
         entry.pop("args", None)
     else:
-        entry.update(command=command, args=[])
+        entry.update(command=command, args=args)
         if client == "claude":
             entry["type"] = "stdio"
         else:
@@ -233,13 +254,12 @@ def build_plan(
     ``report`` is safe to print; ``changes`` contains private config contents and
     must never be printed or logged.
     """
-    if os.name != "posix":
-        raise ValueError("Setup currently installs POSIX launchers for Linux/macOS; Windows integration is not supported.")
+    windows = sys.platform == "win32"
     explicit_project = project is not None
     project = (project or Path(__file__).resolve().parent.parent).expanduser().absolute()
     use_env = home is None
     home = (home or Path.home()).expanduser().absolute()
-    checkout_python = project / ".venv/bin/python"
+    checkout_python = project / (".venv/Scripts/python.exe" if windows else ".venv/bin/python")
     if python is None:
         # A wheel/pipx installation has no checkout-local .venv. Its running
         # interpreter already contains this package and all its dependencies.
@@ -254,20 +274,26 @@ def build_plan(
     unknown = sorted(set(clients) - set(CLIENTS))
     if unknown:
         raise ValueError("Unknown clients: " + ", ".join(unknown))
-    bin_dir = home / ".local/bin"
-    command = str(bin_dir / "thunderbird-mcp")
+    bin_dir = _bin_dir(home, use_env)
+    command = str(python) if windows else str(bin_dir / "thunderbird-mcp")
+    command_args = [str(bin_dir / "thunderbird-mcp.py")] if windows else []
     report: dict[str, Any] = {"project": str(project), "clients": [], "files": [], "notes": []}
     changes: list[dict] = []
 
     def add(path: Path, content: str, mode: int, kind: str) -> None:
         before = _read(path)
         after = content.encode("utf-8")
-        changed = before != after or (path.exists() and stat.S_IMODE(path.stat().st_mode) != mode)
+        changed = before != after or (not windows and path.exists() and stat.S_IMODE(path.stat().st_mode) != mode)
         report["files"].append({"path": str(path), "kind": kind, "changed": changed})
         if changed:
             changes.append({"path": str(path), "before": before, "after": after, "mode": mode})
 
     for name, module in (("thunderbird-mcp", "thunderbird_mcp.server"), ("tbmail", "thunderbird_mcp.cli"), ("thunderbird-mail", "thunderbird_mcp.cli"), ("thunderbird-mcp-setup", "thunderbird_mcp.setup")):
+        if windows:
+            script = bin_dir / (name + ".py")
+            add(script, "# Managed by thunderbird-mcp-setup.\n" + _entrypoint_program(module, project) + "\n", 0o600, "command")
+            add(bin_dir / (name + ".cmd"), _windows_launcher(python, script), 0o755, "command")
+            continue
         path = bin_dir / name
         if _installed_entrypoint(path, python, module):
             report["files"].append({"path": str(path), "kind": "command", "changed": False, "preserved_entrypoint": True})
@@ -277,7 +303,7 @@ def build_plan(
         path = _client_path(client, home, use_env)
         before = _read(path)
         raw = before.decode("utf-8") if before is not None else ("" if client == "codex" else "{}\n")
-        result, notes = _client_update(client, raw, command)
+        result, notes = _client_update(client, raw, command, command_args)
         add(path, result, 0o600, "client")
         report["clients"].append({"name": client, "path": str(path), "installed": bool(shutil.which(client))})
         report["notes"].extend(notes)
@@ -315,7 +341,8 @@ def apply_plan(plan: dict) -> dict:
                 stream.write(change["after"])
                 stream.flush()
                 os.fsync(stream.fileno())
-                os.fchmod(stream.fileno(), change["mode"])
+                if os.name == "posix":
+                    os.fchmod(stream.fileno(), change["mode"])
             if _read(path) != change["before"]:
                 raise RuntimeError(f"Configuration changed while applying: {path}; rerun setup.")
             os.replace(temp, path)

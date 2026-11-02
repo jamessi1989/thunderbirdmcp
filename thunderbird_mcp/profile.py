@@ -20,6 +20,10 @@ def _candidate_roots() -> list[Path]:
     ]
     if sys.platform == "darwin":
         roots.insert(0, home / "Library" / "Thunderbird")
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        roaming = Path(appdata).expanduser() if appdata and Path(appdata).expanduser().is_absolute() else home / "AppData" / "Roaming"
+        roots.insert(0, roaming / "Thunderbird")
     return roots
 
 
@@ -57,6 +61,8 @@ def find_profile() -> Path:
             if not path:
                 continue
             is_relative = cfg[section].get("IsRelative", "1") == "1"
+            if sys.platform == "win32":
+                path = path.replace("\\", "/")
             profile_dir = (root / path) if is_relative else Path(path)
             if profile_dir.is_dir():
                 profiles.append(profile_dir)

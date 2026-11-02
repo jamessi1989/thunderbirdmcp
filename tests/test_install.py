@@ -45,6 +45,14 @@ class InstalledDataTests(unittest.TestCase):
         with patch.object(index.sys, "platform", "darwin"):
             self.assertEqual(index.default_db_path(), self.home / "Library/Application Support/thunderbird-mcp/mail-index.sqlite")
 
+    def test_windows_wheel_uses_local_app_data_and_rejects_relative_root(self):
+        with patch.object(index.sys, "platform", "win32"):
+            self.assertEqual(index.default_db_path(), self.home / "AppData/Local/thunderbird-mcp/mail-index.sqlite")
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(self.home / "custom local")}):
+                self.assertEqual(index.default_db_path(), self.home / "custom local/thunderbird-mcp/mail-index.sqlite")
+            with patch.dict(os.environ, {"LOCALAPPDATA": "relative"}):
+                self.assertEqual(index.default_db_path(), self.home / "AppData/Local/thunderbird-mcp/mail-index.sqlite")
+
     def test_source_checkout_and_explicit_database_paths_remain_unchanged(self):
         (self.package.parent / "pyproject.toml").write_text('[project]\nname="thunderbird-mcp"\n', encoding="utf-8")
         self.assertEqual(index.default_db_path(), self.package.parent.resolve() / "mail-index.sqlite")

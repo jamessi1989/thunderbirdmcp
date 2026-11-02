@@ -42,6 +42,18 @@ class ProfileTests(unittest.TestCase):
         with patch.object(profile.sys, "platform", "linux"):
             self.assertEqual(profile.find_profile(), populated)
 
+    def test_windows_roaming_profile_discovery_and_backslash_paths(self):
+        roaming = self.home / "custom roaming"
+        root = roaming / "Thunderbird"
+        selected = root / "Profiles" / "100% native mail"
+        selected.mkdir(parents=True)
+        (root / "profiles.ini").write_text("[Profile0]\nIsRelative=1\nPath=Profiles\\100% native mail\n", encoding="utf-8")
+        with patch.object(profile.sys, "platform", "win32"), patch.dict(os.environ, {"APPDATA": str(roaming)}):
+            self.assertEqual(profile._candidate_roots()[0], root)
+            self.assertEqual(profile.find_profile(), selected)
+        with patch.object(profile.sys, "platform", "win32"), patch.dict(os.environ, {"APPDATA": "relative"}):
+            self.assertEqual(profile._candidate_roots()[0], self.home / "AppData/Roaming/Thunderbird")
+
     def test_absolute_profile_location_and_explicit_override(self):
         root = self.home / ".thunderbird"
         root.mkdir()
