@@ -55,6 +55,6 @@ packages = ["thunderbird_mcp"]
 [tool.hatch.build.targets.sdist]
 only-include = [
     "thunderbird_mcp", "scripts", "tests", "systemd", "docs", ".github",
-    "README.md", "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md",
+    "README.md", "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md", "ROADMAP.md",
     "pyproject.toml", "uv.lock",
 ]
