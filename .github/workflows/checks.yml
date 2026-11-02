@@ -19,7 +19,9 @@ jobs:
             python: '3.11'
           - os: ubuntu-latest
             python: '3.12'
-          - os: macos-latest
+          # macos-latest uses arm64; hosted capacity currently prevents jobs
+          # acquiring a runner. Keep macOS checks on the supported Intel image.
+          - os: macos-15-intel
             python: '3.12'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15

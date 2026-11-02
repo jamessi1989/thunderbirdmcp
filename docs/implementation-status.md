@@ -42,6 +42,10 @@ discovery, synthetic search/read/reference/resource/attachments/drafts and
 unchanged fixture profiles. Application networking was blocked and the keyring
 disabled during those install checks. The final publication runs the
 [integrated CI matrix](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml).
+The macOS release job uses the supported `macos-15-intel` image: GitHub's arm64
+runner pool reported capacity failures before acquiring a runner. This changes
+the execution architecture, not the required suite/benchmark/install checks;
+the current release does not claim a completed Apple Silicon CI run.
 The native Windows
 isolation check is [CI run 41531190251](https://github.com/jamessi1989/thunderbirdmcp/actions/runs/41531190251),
 whose Windows install job passed; the final integrated release has its own CI.
