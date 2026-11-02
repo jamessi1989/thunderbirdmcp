@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.4.0 — 2026-11-02
+
+This release implements the twenty-item [roadmap](ROADMAP.md), with **56 mail
+MCP tools** and the same stdio integrations. See the [workflow guide](docs/workflows.md)
+for configuration requirements and bounded behavior. Native desktop features
+use a separately configured companion; they are not counted in these 56 tools.
+
+### Added
+
+- Enforced read-only/draft-only/full profiles, tool allowlists, account/file
+  boundaries and direct-call protection. The same rules govern services.
+- Revision-checked draft editing/discard/reconciliation, forwards with explicit
+  recipients/attachments, HTML/plain alternatives, inline parts and configured
+  sender/SMTP identities. Existing exact-MIME delivery claims remain shared.
+- Bounded live read/star/keyword/Gmail-label changes; copy/move/archive/trash/
+  restore and explicitly confirmed scoped permanent deletion; special-use
+  discovery and ordinary-folder rename/empty deletion. Previews and per-item
+  uncertain outcomes remain visible, including when cancellation is requested.
+- Stable search continuation snapshots, omitted-match and filter/term
+  diagnostics, bounded live multi-scope search and partial-failure reporting.
+- Reviewed batch exports with frozen bytes, collision-free filenames,
+  checksums, no overwrite and explicit resume/recovery.
+- Durable operation history, cancellation before mail effects, new-mail
+  events with resume cursors and optional bounded IMAP IDLE. Explicit foreground
+  service commands are installed without enabling background activity.
+- Approved revision-bound delivery scheduling through SMTP, Gmail or Graph,
+  with timezones, persistent claims and no automatic uncertain-delivery retry.
+- BYO browser OAuth enrollment with PKCE, separate Gmail/Graph credentials and
+  API adapters for search/read/threads/triage/draft handoff/sending. API scopes
+  remain distinct from Gmail's broad IMAP/SMTP scope.
+- Authenticated stateless Streamable HTTP, private hash-only bearer config,
+  principal-owned persisted state, explicit account/file roots and loopback
+  default. Host/Origin and request-size checks apply before dispatch.
+- Bounded authentication-header evidence and header-based follow-up candidates;
+  neither automatically trusts a sender nor sends reminders.
+- Incremental read-only Maildir indexing retaining existing references and IDs.
+  Optional Tesseract OCR supports images/scanned PDFs with explicit installed
+  languages, no automatic downloads and byte/page/pixel/time limits.
+- Native Windows profile/data discovery and launchers, plus a Windows installed
+  wheel/stdio CI job. A pinned separate native Thunderbird bridge covers
+  contacts, calendars/tasks, filters and settings in an isolated environment.
+- `tbmail call` exposes the same typed MCP tools from terminal sessions;
+  friendly draft/forward/triage/auth commands and service/HTTP entrypoints are
+  included. Documentation now separates capabilities from verification scope.
+
+- Add `save_draft_to_thunderbird` and `tbmail save-draft <draft-id>` to save a local
+  draft in the account's Thunderbird IMAP Drafts folder without sending. Bcc,
+  captured attachments, and reply threading are preserved. Repeat or interrupted
+  saves cannot append automatically again, and the local snapshot cannot be sent
+  after it is handed to Thunderbird for editing. Local and cross-account Drafts
+  destinations are rejected.
+
+### Verification scope
+
+Regression tests use generated messages, isolated homes and mocked transports.
+Actual MCP stdio/HTTP protocol checks cover restrictive profiles, account and
+file isolation, draft revisions and cross-session references. Native Windows
+CI exercises a wheel installation, command launchers and synthetic mail through
+the real stdio protocol. An isolated real Tesseract/Poppler smoke extracted text
+from synthetic PNG and image-only PDF documents. The companion's pinned
+catalogue/stdio and configuration were checked separately.
+
+Real provider consent, deliveries, mailbox mutations/IDLE and interactive
+Thunderbird-addon operations were not performed with the user's mail. Provider
+application/tenant consent, installed OCR engines/languages and native addon
+installation remain explicit configuration requirements.
+
 ## 0.3.1 — 2026-11-02
 
 This release improves installation and makes the mail workflows easier to

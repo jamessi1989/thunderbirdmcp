@@ -80,6 +80,34 @@ class ReplyRecipientsTests(unittest.TestCase):
 
 
 class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_profiles_hide_and_reject_disallowed_protocol_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = {key: value for key, value in os.environ.items() if not key.startswith("TB_")}
+            base.update(TB_PROFILE=str(root / "unused-profile"),
+                        TB_MAIL_INDEX_DB=str(root / "unused-index.sqlite"),
+                        TB_OUTBOX_DB=str(root / "unused-outbox.sqlite"))
+            for profile, names in (("read-only", "get_email,send_draft"),
+                                   ("draft-only", "draft_email,send_draft")):
+                env = {**base, "TB_MCP_PROFILE": profile, "TB_MCP_TOOLS": names}
+                parameters = StdioServerParameters(command=sys.executable,
+                    args=["-m", "thunderbird_mcp.server"], env=env,
+                    cwd=str(Path(__file__).resolve().parents[1]))
+                async with stdio_client(parameters) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        listed = {tool.name for tool in (await session.list_tools()).tools}
+                        expected = {"get_email"} if profile == "read-only" else {"draft_email"}
+                        self.assertEqual(listed, expected)
+                        response = await session.call_tool("send_draft", {"draft_id": "synthetic"})
+                        self.assertTrue(response.isError)
+                        # Resource reads must not bypass a get_email allowlist.
+                        if profile == "draft-only":
+                            with self.assertRaises(Exception):
+                                await session.read_resource("thunderbird://message/synthetic")
+            self.assertFalse((root / "unused-outbox.sqlite").exists())
+            self.assertFalse((root / "unused-index.sqlite").exists())
+
     async def test_tools_resources_prompts_search_read_and_draft(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -132,9 +160,11 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
                     tools = {tool.name: tool for tool in (await session.list_tools()).tools}
                     self.assertTrue({"search_email", "draft_reply", "send_draft", "get_email_reference",
                                      "get_thread", "mail_status", "export_attachment", "search_live_email",
-                                     "list_accounts", "get_attachment_text"} <= set(tools))
+                                     "list_accounts", "get_attachment_text", "save_draft_to_thunderbird"} <= set(tools))
                     self.assertTrue(tools["search_email"].annotations.readOnlyHint)
                     self.assertFalse(tools["send_draft"].annotations.readOnlyHint)
+                    self.assertFalse(tools["save_draft_to_thunderbird"].annotations.readOnlyHint)
+                    self.assertTrue(tools["save_draft_to_thunderbird"].annotations.openWorldHint)
                     self.assertTrue(tools["search_live_email"].annotations.readOnlyHint)
                     self.assertTrue(tools["search_live_email"].annotations.openWorldHint)
                     self.assertIn("account", tools["draft_email"].inputSchema["properties"])

@@ -272,7 +272,7 @@ def search_email(query: str = "", limit: int = 20, *, folder: str | None = None,
                  account: str | None = None, sender: str | None = None,
                  recipient: str | None = None, subject: str | None = None,
                  since: str | None = None, until: str | None = None,
-                 unread: bool | None = None) -> dict:
+                 unread: bool | None = None, _snapshot_limit: int | None = None) -> dict:
     """Search one live folder, returning headers without marking messages read.
 
     Words/quoted phrases are literal IMAP TEXT matches joined with AND. Supports
@@ -281,6 +281,8 @@ def search_email(query: str = "", limit: int = 20, *, folder: str | None = None,
     """
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
+    if _snapshot_limit is not None and not 1 <= _snapshot_limit <= 5000:
+        raise ValueError("snapshot limit must be between 1 and 5000")
     _text(query, "Query", empty=True)
     if unread is not None and not isinstance(unread, bool):
         raise ValueError("unread must be true, false, or omitted")
@@ -330,14 +332,18 @@ def search_email(query: str = "", limit: int = 20, *, folder: str | None = None,
     with _session(config) as connection:
         validity = _select(connection, folder)
         uids = _search_uids(connection, criteria, deadline)
-        for uid in uids[:limit]:
+        for uid in uids[:_snapshot_limit or limit]:
             locator = Locator(config["account_id"], _fingerprint(config), folder, validity, uid)
+            if _snapshot_limit is not None:
+                results.append({"reference": locator.reference, "account_id": locator.account,
+                                "folder": locator.folder, "uidvalidity": locator.uidvalidity, "uid": locator.uid})
+                continue
             try:
                 results.append(_header(connection, locator, deadline))
             except LookupError:
                 warnings.append("A matching message left this folder during the search; search again if needed")
     return {"source": "imap", "account": config["account_id"], "folder": folder,
-            "count": len(results), "matched": len(uids), "truncated": len(uids) > limit,
+            "count": len(results), "matched": len(uids), "truncated": len(uids) > (_snapshot_limit or limit),
             "order": "newest_uid_first", "results": results,
             "diagnostics": {"semantic": "disabled", "headers_only": True,
                             "warnings": list(dict.fromkeys(warnings))}}

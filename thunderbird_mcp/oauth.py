@@ -30,8 +30,15 @@ _FIELDS = ("access_token", "refresh_token", "client_id", "client_secret", "token
 
 def _key(config: dict, protocol: str) -> str:
     from .outgoing import credential_key
+    if protocol in ("gmail", "graph"):
+        binding = [config.get("account_id", "environment"), protocol,
+                   config.get(f"{protocol}_host"), config.get(f"{protocol}_user"),
+                   config.get("graph_tenant") if protocol == "graph" else None]
+        if not binding[2] or not binding[3]:
+            raise ValueError("Configure an API mailbox before importing its credentials")
+        return "api:" + hashlib.sha256(json.dumps(binding, separators=(",", ":")).encode()).hexdigest()
     if protocol not in ("imap", "smtp"):
-        raise ValueError("Protocol must be imap or smtp")
+        raise ValueError("Protocol must be imap, smtp, gmail, or graph")
     return credential_key(config, protocol)
 
 
@@ -50,6 +57,14 @@ def _endpoint(value: str) -> str:
 
 
 def _default_endpoint(config: dict, protocol: str) -> str | None:
+    if protocol == "gmail":
+        return "https://oauth2.googleapis.com/token"
+    if protocol == "graph":
+        import re
+        tenant = config.get("graph_tenant", "common")
+        if not isinstance(tenant, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,200}", tenant):
+            raise ValueError("Invalid Microsoft tenant")
+        return f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
     host = config[f"{protocol}_host"].lower()
     if host in {"imap.gmail.com", "smtp.gmail.com", "imap.googlemail.com", "smtp.googlemail.com"}:
         return "https://oauth2.googleapis.com/token"
@@ -117,7 +132,10 @@ def _stored(config: dict, protocol: str) -> dict:
 def _load(config: dict, protocol: str) -> dict:
     from .outgoing import credential_environment
     # Explicit environment credentials work even if a desktop keyring is locked.
-    values = {field: credential_environment(config, protocol, "OAUTH_" + field.upper()) for field in _FIELDS}
+    # Native API grants never fall back to an IMAP/SMTP or global environment
+    # token. Their keys include provider, account and mailbox identity.
+    values = ({field: credential_environment(config, protocol, "OAUTH_" + field.upper()) for field in _FIELDS}
+              if protocol in ("imap", "smtp") else {})
     values = {field: value for field, value in values.items() if value is not None}
     if values.get("access_token") or values.get("refresh_token"):
         result = _validated(values)

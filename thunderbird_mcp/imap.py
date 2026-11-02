@@ -226,6 +226,8 @@ def _reflect_in_index(msgids: list[str], from_local: str, to_local: str) -> None
 
 
 def move_emails(ids: list[int], dest: str, dry_run: bool = True, account: str | None = None) -> dict:
+    from . import policy
+    policy.require("mail-write", tool="move_emails", account=account)
     _q(dest)
     if not isinstance(ids, list) or any(not isinstance(value, int) or isinstance(value, bool) or value < 1 for value in ids):
         raise ValueError("ids must be a list of positive integer message ids")
@@ -287,6 +289,8 @@ def move_emails(ids: list[int], dest: str, dry_run: bool = True, account: str | 
 
 
 def undo_batch(batch: str, account: str | None = None) -> dict:
+    from . import policy
+    policy.require("mail-write", tool="undo_move", account=account)
     entries = []
     path = undo_log_path()
     if path.exists():
@@ -320,6 +324,8 @@ def undo_batch(batch: str, account: str | None = None) -> dict:
 
 
 def create_folder(name: str, account: str | None = None) -> dict:
+    from . import policy
+    policy.require("mail-write", tool="create_folder", account=account)
     _q(name)
     with session(account=account) as m:
         if name in list_folders(m):

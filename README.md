@@ -1,24 +1,36 @@
-# thunderbird-mcp
+# Thunderbird MCP — email tools for Codex, Claude Code and OpenCode
 
-**Read, search, organize, and send Thunderbird mail from your AI tools.**
+**Search, read, draft, send and organize your mail from an AI agent or terminal.**
+
+Thunderbird MCP is an open-source Python **email MCP server** and `tbmail` CLI.
+It combines local mail and attachment search with live IMAP/SMTP workflows,
+native Gmail API and Microsoft Graph adapters, and reusable mail references.
+The canonical project is **[jamessi1989/thunderbirdmcp](https://github.com/jamessi1989/thunderbirdmcp)**,
+released under MIT.
 
 [![Mail MCP checks](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml/badge.svg)](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml)
-[Demo](docs/demo.md) · [Installation guide](docs/installation.md) ·
+[Quick start](#start-using-it) · [Demo](docs/demo.md) · [Installation guide](docs/installation.md) ·
+[Workflows](docs/workflows.md) · [FAQ](docs/faq.md) · [Comparison](docs/comparison.md) ·
 [Releases](https://github.com/jamessi1989/thunderbirdmcp/releases) ·
 [Report your installation](https://github.com/jamessi1989/thunderbirdmcp/issues/new?template=installation-feedback.yml)
 
-Work with your mail from Claude Code, Codex, OpenCode, Terminalman, or a normal
-shell. The MCP exposes 23 tools across these workflows:
+Work with your mail from **Claude Code, Codex, OpenCode (including GLM),
+Terminalman**, or a normal shell. Available tools depend on the configured
+read-only, draft-only or full profile; `tbmail tools` shows the active catalogue.
 
 | Workflow | Available now |
 | --- | --- |
-| Read and find | Read messages and threads; search downloaded mail by keywords or meaning; search fresh mail over IMAP; find text inside PDF and Office attachments. |
-| Compose and send | Prepare new messages with To/Cc/Bcc and attachments; draft replies and reply-all; review and send saved drafts with duplicate-send protection. |
-| Organize | List and create IMAP folders, preview and execute bulk moves of indexed messages, and undo recorded move batches. |
-| Reference and export | Reuse mail references across projects and sessions; export original messages and individual attachments. |
-| Accounts and diagnostics | Select accounts per operation, check connection/index health, and refresh the local search index. |
+| Read and find | Keyword and local semantic search; extracted PDF/Office attachment text; live IMAP and native provider search; snapshot pagination and explicit coverage limits. |
+| Compose and send | New messages, reply/reply-all and forwards; To/Cc/Bcc; HTML/plain alternatives and inline attachments; configured sender identities; revisioned drafts and duplicate-send protection. |
+| Organize | Read/unread, flags and keywords; Gmail labels; preview live-reference copy/move/archive/trash/restore; folder management and recorded undo. |
+| Reference and export | Reusable message references; original-message and attachment export; reviewed batch plans, checksums and recovery. |
+| Automate and inspect | Explicitly approved scheduled drafts, durable new-mail events, operation history/cancellation, authentication evidence and follow-up candidates. |
+| Accounts and access | Multiple accounts, BYO OAuth enrollment, enforced tool profiles/allowlists and optional authenticated Streamable HTTP. |
+| Thunderbird desktop | Contacts, calendars, tasks, filters and settings through the separate [pinned native companion](docs/native-integration.md). |
 
-Sending uses SMTP and credentials kept in the system keyring. The demo below
+Mail credentials stay in the system keyring. Local indexing and document
+extraction run on your machine; content returned to a hosted AI client goes to
+that client's model provider. The demo below
 shows one workflow: finding a PDF invoice, reusing its reference, and preparing
 an unsent reply.
 
@@ -38,7 +50,7 @@ uv run python scripts/demo.py
 
 The demo uses temporary synthetic mail and an invoice PDF. It prepares an unsent
 reply; it needs no mail credentials or AI model. To use your own mailbox,
-configure Thunderbird to download messages in mbox format, then run:
+configure Thunderbird to download messages (mbox or Maildir), then run:
 
 ```bash
 uv run thunderbird-mcp-index
@@ -48,10 +60,14 @@ uv run thunderbird-mcp-setup --apply
 The [installation guide](docs/installation.md) covers credentials, custom profiles,
 installing a release wheel without a checkout, and troubleshooting. Linux is the
 primary tested desktop; Linux and macOS run the synthetic suite and package
-installation checks in CI. Native Windows installation is not yet verified.
+installation checks in CI, with a separate native Windows installation job.
+Real provider/desktop checks and synthetic verification are reported separately.
 
-Setup installs `tbmail`, `thunderbird-mail`, `thunderbird-mcp`, and
-`thunderbird-mcp-setup` in `~/.local/bin`. It registers the MCP in the global
+Setup installs `tbmail`, `thunderbird-mail`, `thunderbird-mcp`,
+`thunderbird-mcp-setup`, `thunderbird-mcp-service` and `thunderbird-mcp-http`
+in `~/.local/bin` on Linux/macOS. Windows uses native
+launchers under `%LOCALAPPDATA%\thunderbird-mcp\bin` and direct Python commands
+for MCP clients. Setup registers the MCP in the global
 configuration of installed Claude Code, Codex, OpenCode, Antigravity, and Gemini
 CLI clients.
 Use `--clients claude codex` to select clients, or `--clients none` to install
@@ -86,9 +102,11 @@ You can then ask:
 - “Read that conversation and give me a reference I can use in another session.”
 - “Prepare a reply to this mail saying the migration is complete.”
 - “Send draft `<draft-id>`.”
-- “List my folders and preview moving those messages into Archive.”
+- “Preview archiving these live results, then mark the selected messages read.”
 - “Undo that move batch.”
-- “Export that message and its PDF attachment to this project.”
+- “Prepare a forward with just the invoice attachment.”
+- “Plan an export of those messages and PDFs into this project.”
+- “Show unanswered outgoing conversations and explain the evidence.”
 
 ## Check Codex, Claude, and OpenCode
 
@@ -113,7 +131,7 @@ After updating the checkout and running `uv sync --locked` and
 
 | Client | Reload without losing the conversation |
 | --- | --- |
-| Claude Code | Run `/mcp`, select `thunderbird`, and choose **Reconnect**. Open `/mcp` again to check that it is connected and lists **23 tools**. |
+| Claude Code | Run `/mcp`, select `thunderbird`, and choose **Reconnect**. Open `/mcp` again to check that it is connected and shows the tools allowed by your profile. |
 | OpenCode | Press **Ctrl+P**, choose **Toggle MCPs**, select `thunderbird`, then press **Space** to disable it and **Space** again to enable it. Check that it shows **connected**. |
 | Codex | An existing app-server connection can reload its loaded threads using the protocol below. For a CLI session without that connection, wait until idle, use `/exit`, then run `codex resume --last` from the same project and check `/mcp`. |
 
@@ -136,7 +154,7 @@ connections.
 
 Reload reads configuration from disk and queues a refresh for loaded threads.
 Check the status response again after the refresh completes; the `thunderbird`
-tool inventory should contain 23 tools. The
+tool inventory should match `tbmail tools` under the same policy. The
 [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server) documents
 the connection transport, handshake, reload request, and status query.
 The [Codex CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
@@ -220,11 +238,21 @@ tbmail drafts
 tbmail drafts <draft-id>
 tbmail send <draft-id>                  # Show the saved preview
 tbmail send <draft-id> --confirm        # Submit exactly that saved draft
+tbmail save-draft <draft-id>            # Or hand it to Thunderbird's Drafts folder, unsent
 ```
 
 Drafts support To/Cc/Bcc and captured local attachments. Reply drafts preserve
 In-Reply-To and References, honor Reply-To, and exclude your address from reply-all.
-Drafts are local to this application; they do not appear in Thunderbird Drafts.
+Drafts start in this application's local store. Use `tbmail save-draft <draft-id>`
+or the MCP tool `save_draft_to_thunderbird` to save one in Thunderbird's configured
+IMAP Drafts folder, without sending it. Refresh that folder to see the draft.
+After saving, the local snapshot remains locked against sending. Use
+`reconcile_draft` to explicitly import the current server draft, review its new
+revision, and edit/publish changes with conflict checks; sending that handed-off
+draft continues in Thunderbird. Repeated saves do not create another copy. If a save is interrupted or its
+outcome is uncertain, inspect Thunderbird before creating another draft.
+The destination must be an existing IMAP folder in the same account; Local Folders
+and cross-account Drafts destinations are not supported.
 `--body-file -` reads standard input. Use `tbmail --help` for all commands.
 Replies infer the original account when it can be identified; use `--account`
 to select it explicitly. Each saved draft retains its original account and
@@ -247,26 +275,39 @@ authenticate and issue NOOP without sending anything.
 
 ## MCP interface
 
-The server exposes **23 tools, 3 resource URI patterns, and 2 prompts**.
+The tool catalogue covers the workflows below. Use `tbmail tools` for the active
+schemas, or `tbmail call TOOL --args JSON` to call the same policy-checked
+interface from the terminal. See the [workflow reference](docs/workflows.md)
+for complete examples and limits.
 
 | Workflow | Tools |
 | --- | --- |
-| Health and search | `mail_status`, `list_accounts`, `search_email`, `search_live_email`, `list_folders`, `reindex` |
+| Health and search | `mail_status`, `list_accounts`, `search_email`, `search_live_email`, `search_page`, `list_folders`, `reindex`, `ocr_status` |
 | Read and cite | `get_email`, `get_thread`, `get_email_reference` |
-| Original mail and attachments | `list_attachments`, `get_attachment_text`, `export_email`, `export_attachment` |
-| Prepare and send | `draft_email`, `draft_reply`, `get_draft`, `list_drafts`, `send_draft`, `send_email` |
-| Organize | `imap_list_folders`, `create_folder`, `move_emails`, `undo_move` |
+| Original mail and attachments | `list_attachments`, `get_attachment_text`, `export_email`, `export_attachment`, `plan_export`, `execute_export`, `recover_export` |
+| Prepare and send | `draft_email`, `draft_reply`, `draft_forward`, `get_draft`, `list_drafts`, `list_identities`, `edit_draft`, `discard_draft`, `reconcile_draft`, `save_draft_to_thunderbird`, `send_draft`, `send_email` |
+| Organize | `imap_list_folders`, `special_folders`, `create_folder`, `move_emails`, `undo_move`, `update_email_flags`, `organize_emails`, `manage_folder` |
+| Native providers | `oauth_setup_guide`, `provider_search`, `provider_labels`, `provider_update_labels`, `save_draft_to_provider`, `send_draft_via_provider` |
+| Operations and evidence | `get_operation`, `list_operations`, `cancel_operation`, `authentication_evidence`, `follow_up_candidates` |
+| Scheduled sending and events | `schedule_draft`, `get_schedule`, `list_schedules`, `cancel_schedule`, `run_scheduled`, `watch_mail`, `list_mail_events` |
 
 Resources: `thunderbird://status`, `thunderbird://message/{key}`, and
 `thunderbird://imap/{account}/{fingerprint}/{folder}/{uidvalidity}/{uid}`.
 Prompts: `find_mail(query)` and `reply_to_mail(reference, instructions)`.
 Tools have read/write annotations. Mail and attachment content is treated as
-untrusted data. The server uses stdio; protocol stdout contains only MCP messages.
+untrusted data. The default transport is stdio; protocol stdout contains only MCP
+messages. An optional authenticated Streamable HTTP entrypoint provides explicit
+principal/account/file boundaries; deployment and credentials are configured
+separately. It is not a hosted ChatGPT connector.
 
-The current interface has no dedicated tools for forwarding, changing read/unread
-or flagged status, permanent deletion, scheduled sending, contacts, calendars,
-or Thunderbird message filters. Folder moves and their undo operations act on
-indexed messages; live-only references cannot be passed directly to `move_emails`.
+Set `TB_MCP_PROFILE=read-only` or `draft-only` to restrict effects; `full` preserves
+the complete interface. `TB_MCP_TOOLS` selects an explicit tool allowlist.
+Restrictions apply at dispatch and operation boundaries, including background
+delivery. Live references use `organize_emails`; the older `move_emails` path
+continues to accept indexed IDs. Contacts/calendars/settings are supplied by
+the [optional native companion](docs/native-integration.md), which has its own
+profile and policy. See [implementation status](docs/implementation-status.md)
+for delivered capabilities and remaining validation requirements.
 
 ## Search and indexing
 
@@ -286,7 +327,7 @@ uv run thunderbird-mcp-embed            # Incremental semantic vectors
 uv run thunderbird-mail-web            # Default: http://127.0.0.1:3458
 ```
 
-The local index reads Thunderbird's **downloaded mbox mail**. Thunderbird must
+The local index reads Thunderbird's **downloaded mbox and Maildir mail**. Thunderbird must
 sync new messages and folders before local search can find them. Refreshing
 this index does not fetch mail from IMAP. Local exports need the local original;
 live references fetch their original from IMAP. Reads do not change read/unread
@@ -303,6 +344,10 @@ Live threads follow reply headers within that folder, bounded to 100 candidates
 and 40 searches. Each live message and the combined raw MIME downloaded for a
 thread, including attachments, are capped at 25 MiB. Live search does not provide
 semantic ranking or extracted document text search; those use the local index.
+For pagination and bounded searches across multiple account/folder scopes, use
+`search_page`. Its cursor identifies a frozen result selection; responses report
+coverage, omitted matches and partial scope failures. Native API searches expose
+their provider's query semantics and continuation.
 
 Attachment text search supports TXT/CSV/JSON and other text formats, HTML/XML,
 PDF, DOCX, XLSX, and PPTX. Filenames remain searchable when text extraction is
@@ -310,7 +355,11 @@ unsupported. `get_attachment_text` / `tbmail attachment-text` reads a selected
 attachment, including from live mail. Extraction reports `extracted`, `empty`,
 `unsupported`, `encrypted`, `too_large`, or `error`, plus truncation. Indexing
 also reports `too_many` when the attachment-count limit is exceeded.
-Scanned PDFs need OCR, which is not included.
+Scanned PDFs and supported images can use optional local OCR. It is off by
+default and requires the `ocr` extra, Tesseract/language packs and, for PDFs,
+Poppler. `ocr_status` reports availability; no OCR model or language is downloaded
+automatically. See [Maildir and OCR setup](docs/workflows.md#maildir-and-optional-ocr)
+for explicit resource limits and the full reindex needed after enabling it.
 
 Extraction limits are 8 MiB and 25,000 text characters per attachment. Indexing
 also caps each message at 24 MiB decoded bytes, 64 attachments, and 100,000 text
@@ -367,6 +416,8 @@ Environment overrides:
 | Variable | Meaning |
 | --- | --- |
 | `TB_PROFILE`, `TB_ACCOUNT` | Thunderbird profile path and account ID |
+| `TB_MCP_PROFILE`, `TB_MCP_TOOLS` | Enforced read-only/draft-only/full effects and optional tool allowlist |
+| `TB_MCP_ACCOUNTS`, `TB_MCP_FILE_ROOTS` | Optional account and file access restrictions |
 | `TB_MAIL_INDEX_DB` | Index path; checkout default `mail-index.sqlite`, installed-package default in the user data directory ([paths](docs/installation.md#data-and-configuration-paths)) |
 | `TB_OUTBOX_DB` | Draft/delivery database; default beside the index |
 | `TB_FROM` | Sending identity, e.g. `Name <you@example.org>` |
@@ -395,10 +446,13 @@ put credentials, exported mail, or index/outbox databases in source control.
 
 ## OAuth accounts
 
-OAuth2 uses XOAUTH2 for IMAP/SMTP, with account-scoped keyring storage and
-automatic refresh over verified HTTPS. This release imports tokens obtained
-through your own authorized OAuth application; it does not provide a browser
-consent flow or reuse Thunderbird's OAuth client registration.
+OAuth2 uses account-scoped keyring storage and automatic refresh over verified
+HTTPS. Guided browser enrollment with PKCE is available through `tbmail auth-guide`
+and `tbmail auth-login`, using your own registered OAuth application. Native
+Gmail API and Microsoft Graph adapters can use granular provider permissions;
+ordinary Gmail IMAP/SMTP still needs the mail scope. See the
+[OAuth/provider workflow](docs/workflows.md#gmail-api-graph-and-interactive-enrollment).
+Existing authorized token import remains available:
 
 ```bash
 tbmail auth-import --account account2 --protocol imap --token-file /private/imap-token.json
@@ -443,11 +497,14 @@ preservation, and a real MCP stdio client/server handshake. No tests send mail.
 
 GitHub Actions runs the synthetic suite, keyword benchmark, package build, and
 clean wheel installation checks on Linux (Python 3.10–3.12) and macOS (Python 3.12).
+The native Windows job verifies installation, profile paths, `.cmd` launchers,
+direct Python MCP configuration and a synthetic stdio mail workflow on Python 3.12.
 The installation check uses a fresh virtual environment and temporary home,
 checks client setup and launchers, and calls the installed MCP from an unrelated
 working directory. Live credentials and paid AI clients are not used by CI.
-These checks do not establish real desktop/keyring integration on every platform.
-Windows deployment is not yet verified.
+These checks do not establish real desktop/keyring/provider integration on every
+platform. See [current workflow limits](docs/workflows.md) and the
+[native companion verification record](docs/native-integration.md#verify-the-desktop-connection).
 
 For v0.3.0, all 162 tests, the keyword benchmark, and package builds passed on
 the full matrix in [GitHub Actions](https://github.com/jamessi1989/thunderbirdmcp/actions/runs/41479433495).

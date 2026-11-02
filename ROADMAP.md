@@ -1,4 +1,10 @@
-# Missing features and proposed priorities
+# Feature roadmap and implementation status
+
+The R01–R20 scope below was defined against v0.3.1. Implementation is tracked in
+the [current implementation record](docs/implementation-status.md), with usable
+commands and operating limits in the [workflow guide](docs/workflows.md).
+The tables retain the original requirements and issue evidence; their “missing”
+descriptions are the historical starting point, not a current inventory.
 
 Reviewed **2 November 2026**, against published **v0.3.1**. The
 [comparison and issue evidence](docs/comparison.md) covers five competing MCPs

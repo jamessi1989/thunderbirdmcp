@@ -2,21 +2,25 @@
 
 Start with the [synthetic demo](demo.md) if you want to try search, references,
 and reply preparation without connecting mail. For a real mailbox, Thunderbird
-must already have an account configured. Local indexing reads downloaded **mbox**
-folders; Maildir storage is not supported. Live IMAP search reads the server
+must already have an account configured. Local indexing reads downloaded **mbox
+and Maildir** folders. Live IMAP search reads the server
 directly and does not need a local index.
 
 ## Requirements
 
-- Python 3.10 or later; CI covers 3.10–3.12 on Linux and 3.12 on macOS.
+- Python 3.10 or later; CI covers 3.10–3.12 on Linux and 3.12 on macOS,
+  with a separate native Windows installation job on 3.12.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) for the commands below.
 - Thunderbird for account settings and, for local search, downloaded messages.
 - A working system keyring for stored IMAP/SMTP credentials.
 
 Linux is the primary tested desktop. macOS has profile discovery and automated
 package/setup checks, but a successful CI run does not verify a real Thunderbird
-desktop, keychain, and AI-client combination. Native Windows installation is
-not yet verified; the generated launchers currently use a POSIX shell.
+desktop, keychain, and AI-client combination. Current source includes native
+Windows profile discovery, terminal launchers and direct Python MCP startup.
+Windows CI exercises a synthetic installed-wheel workflow; actual Windows
+Thunderbird/provider/client combinations still need independent desktop checks.
+Native Windows setup support is included from version 0.4.0.
 
 ## Install from a checkout
 
@@ -50,11 +54,11 @@ the checkout. MCP registrations use an absolute command and do not depend on PAT
 ## Install a release wheel
 
 A release wheel installs into a separate tool environment; it does not require
-keeping a source checkout. Version 0.3.1 is available from
-[GitHub Releases](https://github.com/jamessi1989/thunderbirdmcp/releases/tag/v0.3.1):
+keeping a source checkout. Version 0.4.0 is available from
+[GitHub Releases](https://github.com/jamessi1989/thunderbirdmcp/releases/tag/v0.4.0):
 
 ```bash
-uv tool install --python 3.12 https://github.com/jamessi1989/thunderbirdmcp/releases/download/v0.3.1/thunderbird_mcp-0.3.1-py3-none-any.whl
+uv tool install --python 3.12 https://github.com/jamessi1989/thunderbirdmcp/releases/download/v0.4.0/thunderbird_mcp-0.4.0-py3-none-any.whl
 uv tool update-shell
 ```
 
@@ -86,8 +90,8 @@ tbmail status --account account1 --network
 The password commands prompt without echoing the value. Use a provider-issued
 app password when your provider requires one. Profile discovery reads account
 settings; it does not copy passwords out of Thunderbird's password database.
-OAuth accounts instead need the [token import setup](../README.md#oauth-accounts).
-This release does not automate browser consent for Gmail or Microsoft accounts.
+OAuth accounts can use [guided browser enrollment](workflows.md#gmail-api-graph-and-interactive-enrollment)
+with a registered app, or the existing [token import setup](../README.md#oauth-accounts).
 
 The network diagnostic verifies TLS, authentication, and SMTP NOOP without sending
 mail. Then check local and live search:
@@ -116,6 +120,7 @@ same reference can be pasted into a later session.
 | Source checkout | `mail-index.sqlite` in the checkout |
 | Installed package on Linux | `$XDG_DATA_HOME/thunderbird-mcp/mail-index.sqlite`, or `~/.local/share/thunderbird-mcp/mail-index.sqlite` |
 | Installed package on macOS | `$XDG_DATA_HOME/thunderbird-mcp/mail-index.sqlite` if set, otherwise `~/Library/Application Support/thunderbird-mcp/mail-index.sqlite` |
+| Installed package on Windows | An absolute `XDG_DATA_HOME` if set, otherwise `%LOCALAPPDATA%\thunderbird-mcp\mail-index.sqlite` |
 
 `TB_MAIL_INDEX_DB` overrides the index path. The outbox is stored beside the
 index unless `TB_OUTBOX_DB` is set. Mail databases contain private mail and drafts;
@@ -127,6 +132,49 @@ across sessions; relative paths depend on each process's working directory.
 
 Client configuration paths are listed in the [README](../README.md#start-using-it).
 Credentials stay in the system keyring and are not written to those files.
+
+## Native Windows setup
+
+In PowerShell, after installing Python and uv:
+
+```powershell
+git clone https://github.com/jamessi1989/thunderbirdmcp.git
+Set-Location thunderbirdmcp
+uv sync --locked
+uv run thunderbird-mcp-setup --clients codex claude opencode
+uv run thunderbird-mcp-setup --clients codex claude opencode --apply
+uv run tbmail accounts
+uv run tbmail reindex
+```
+
+Profile discovery uses `%APPDATA%\Thunderbird\profiles.ini`, as described in
+[Thunderbird's profile documentation](https://support.mozilla.org/en-US/kb/profiles-where-thunderbird-stores-user-data).
+For a different profile, set `$env:TB_PROFILE = 'C:\path\to\profile'` before
+starting the CLI or client. Windows setup puts terminal `.cmd` launchers and
+Python entry scripts in `%LOCALAPPDATA%\thunderbird-mcp\bin`; add that folder to
+PATH or use `uv run tbmail` in the checkout. MCP entries execute the chosen
+Python interpreter directly, preserving argument boundaries and the caller's
+working directory. They do not depend on a shell or a `.cmd` file association.
+
+Installed-wheel data defaults to
+`%LOCALAPPDATA%\thunderbird-mcp\mail-index.sqlite`; the fallback is
+`%USERPROFILE%\AppData\Local`. An absolute `XDG_DATA_HOME` or `TB_MAIL_INDEX_DB`
+still takes precedence. Source checkouts retain their existing index path.
+Config files and backups use the Windows user directory's inherited ACL;
+POSIX permission bits do not represent Windows ACL guarantees.
+
+The existing `password-set` and OAuth commands use Python keyring's
+[Windows Credential Locker backend](https://keyring.readthedocs.io/en/latest/).
+Run them under the same logged-in Windows account as your AI client. CI imports
+the native backend but uses a null keyring for application checks; it does not
+prove that a particular desktop login can access its credentials.
+
+`scripts/test_windows_install.py --wheel PATH --constraints REQUIREMENTS`
+creates a fresh environment, discovers a synthetic Windows profile, exercises
+the native launcher and real stdio MCP search/read/reference/draft workflow, and
+checks that the source profile is unchanged. Dependency installation can access
+the package index; subsequent application checks block external connections.
+No live message is sent.
 
 If automatic profile discovery selects the wrong profile, set `TB_PROFILE` to
 the directory containing Thunderbird's `prefs.js`. Thunderbird's Troubleshooting
@@ -144,11 +192,11 @@ commands can use `--account`.
 | --- | --- |
 | Profile not found | Set `TB_PROFILE` to the profile directory and run `tbmail accounts`. |
 | Local search has no recent messages | Let Thunderbird download the folders, then run `tbmail reindex`; use `--live` for current server mail. |
-| Maildir profile | Local indexing requires mbox. Use live IMAP operations with this profile. |
+| Maildir profile | Reindex to discover `cur` and `new` files. Temporary files are excluded. |
 | Credential or keyring error | Run from your logged-in desktop session and set credentials for the selected account and protocol. |
-| OAuth account cannot sign in | Check token import, expiry, authorized protocol scopes, and provider policy using `tbmail auth-status`; browser consent is not included. |
+| OAuth account cannot sign in | Use `tbmail auth-guide` and `tbmail auth-status`; check app registration, scopes, expiry and provider/tenant policy. |
 | Agent cannot see mail tools | Check setup selected that client, then reconnect/reload it. A project-specific MCP entry can override the global registration. |
-| Agent sees the old tools | Reconnect it after upgrading. Version 0.3.1 exposes 23 tools. |
+| Agent sees the old tools | Reconnect after upgrading; compare with `tbmail tools` under the same tool profile. |
 | Reindex times out inside an agent | Run `tbmail reindex --embeddings` in a shell or the indexing service. |
 | Private IMAP reference expires | Search live mail again after folder moves or account changes. Use local message references for durable citations. |
 

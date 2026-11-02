@@ -213,14 +213,14 @@ def verify(root: Path, *, uv: str, wheel: Path | None, constraints: Path | None 
     setup = environment / "bin/thunderbird-mcp-setup"
     options = ["--home", str(home), "--clients", "codex", "claude", "opencode"]
     dry = decoded("setup preview", run_command("setup preview", [str(setup), *options], env=env, cwd=working))
-    require(not dry["applied"] and dry["change_count"] == 7, "Fresh setup preview should contain four launchers and three clients")
+    require(not dry["applied"] and dry["change_count"] == 9, "Fresh setup preview should contain six launchers and three clients")
     require(all(Path(item["path"]).is_relative_to(home) for item in dry["files"]), "Setup escaped its explicit --home")
     require(all(not Path(item["path"]).exists() for item in dry["files"]), "Setup preview wrote planned files")
     applied = decoded("setup apply", run_command("setup apply", [str(setup), *options, "--apply"], env=env, cwd=working))
-    require(applied["applied"] and applied["change_count"] == 7, "Setup did not apply all expected changes")
+    require(applied["applied"] and applied["change_count"] == 9, "Setup did not apply all expected changes")
     repeated = decoded("setup idempotence", run_command("setup idempotence", [str(setup), *options, "--apply"], env=env, cwd=working))
     require(repeated["change_count"] == 0 and not repeated["backups"], "Second setup application was not a no-op")
-    for launcher in ("tbmail", "thunderbird-mail", "thunderbird-mcp-setup"):
+    for launcher in ("tbmail", "thunderbird-mail", "thunderbird-mcp-setup", "thunderbird-mcp-service", "thunderbird-mcp-http"):
         run_command("launcher " + launcher, [str(home / ".local/bin" / launcher), "--help"], env=env, cwd=working)
     profile = make_fixture(home)
     profile_before = {str(path.relative_to(profile)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -257,12 +257,12 @@ def verify(root: Path, *, uv: str, wheel: Path | None, constraints: Path | None 
         tool_command += ["-c", str(constraints)]
     run_command("uv tool install", tool_command, env=tool_env, cwd=working, timeout=900)
     tool_links = {name: (tool_bin / name).resolve(strict=True) for name in
-                  ("thunderbird-mcp", "tbmail", "thunderbird-mail", "thunderbird-mcp-setup")}
+                  ("thunderbird-mcp", "tbmail", "thunderbird-mail", "thunderbird-mcp-setup", "thunderbird-mcp-service", "thunderbird-mcp-http")}
     require(all((tool_bin / name).is_symlink() for name in tool_links), "uv tool install did not create expected entrypoint links")
     tool_setup = [str(tool_bin / "thunderbird-mcp-setup"), "--home", str(tool_home), "--clients", "codex", "claude", "opencode", "--apply"]
     tool_applied = decoded("uv tool setup", run_command("uv tool setup", tool_setup, env=tool_env, cwd=working))
     require(tool_applied["change_count"] == 3, "uv-tool setup should write only three client configurations")
-    require(sum(bool(item.get("preserved_entrypoint")) for item in tool_applied["files"]) == 4, "Setup did not preserve uv-tool entrypoints")
+    require(sum(bool(item.get("preserved_entrypoint")) for item in tool_applied["files"]) == len(tool_links), "Setup did not preserve uv-tool entrypoints")
     require(all((tool_bin / name).is_symlink() and (tool_bin / name).resolve(strict=True) == target for name, target in tool_links.items()),
             "Setup replaced an entrypoint managed by uv tool")
     tool_repeat = decoded("uv tool setup idempotence", run_command("uv tool setup idempotence", tool_setup, env=tool_env, cwd=working))

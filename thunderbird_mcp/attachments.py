@@ -183,6 +183,10 @@ def extract_text(payload: bytes, filename: str = "", content_type: str = "", *,
         if suffix == ".pdf" or ctype == "application/pdf":
             pdf = _pdf(payload)
             value, truncated = pdf["text"], pdf["truncated"]
+            if not value.strip():
+                from . import ocr
+                if ocr.enabled():
+                    return ocr.extract_text(payload, pdf=True)
         elif suffix in {".docx", ".xlsx", ".pptx"} or ctype in _OOXML_TYPES:
             value = _office(payload, _OOXML_TYPES.get(ctype, suffix))
         elif suffix in {".html", ".htm"} or ctype == "text/html":
@@ -193,6 +197,10 @@ def extract_text(payload: bytes, filename: str = "", content_type: str = "", *,
             value = " ".join(_xml(payload).itertext())
         elif suffix in _TEXT_SUFFIXES or ctype.startswith("text/") or ctype in {"application/json", "application/ld+json"}:
             value = _decode(payload, charset)
+        elif suffix in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp"} or ctype in {
+                "image/png", "image/jpeg", "image/tiff", "image/bmp", "image/gif", "image/webp"}:
+            from . import ocr
+            return ocr.extract_text(payload)
         else:
             return {**result, "reason": "format_not_supported"}
         value = _plain(value)

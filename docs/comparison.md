@@ -1,5 +1,11 @@
 # Mail MCP comparison
 
+**Historical baseline:** this page compares v0.3.1. The subsequent 0.4.0 work
+implements the broader workflows in the [implementation record](implementation-status.md)
+and [workflow guide](workflows.md). The older “missing” cells below describe the
+reviewed release, not the current tool catalogue. Competitor snapshots have not
+been rerun or refreshed for this implementation update.
+
 Reviewed **2 November 2026**. This compares our published
 [v0.3.1 release](https://github.com/jamessi1989/thunderbirdmcp/releases/tag/v0.3.1)
 with five public projects. Our baseline has **23 tools**. An unreleased

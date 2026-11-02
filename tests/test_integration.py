@@ -144,7 +144,7 @@ command = "keep"
     def test_installed_package_uses_running_interpreter_without_checkout_venv(self):
         with patch.object(setup, "__file__", str(self.project / "thunderbird_mcp/setup.py")):
             plan = setup.build_plan(home=self.home, clients=["claude"])
-        self.assertEqual(plan["report"]["change_count"], 5)
+        self.assertEqual(plan["report"]["change_count"], 7)
         launcher = next(change for change in plan["changes"] if change["path"].endswith("/tbmail"))
         self.assertIn(str(Path(sys.executable).absolute()).encode(), launcher["after"])
         self.assertNotIn(str(self.project / ".venv/bin/python").encode(), launcher["after"])
@@ -162,7 +162,8 @@ command = "keep"
         environment.mkdir(parents=True)
         python = environment / "python"
         python.symlink_to(sys.executable)
-        commands = {"thunderbird-mcp": "server", "tbmail": "cli", "thunderbird-mail": "cli", "thunderbird-mcp-setup": "setup"}
+        commands = {"thunderbird-mcp": "server", "tbmail": "cli", "thunderbird-mail": "cli", "thunderbird-mcp-setup": "setup",
+                    "thunderbird-mcp-service": "service", "thunderbird-mcp-http": "remote"}
         for name, module in commands.items():
             target = environment / name
             target.write_text(f"#!/usr/bin/env python3\nfrom thunderbird_mcp.{module} import main\n", encoding="utf-8")
@@ -174,7 +175,7 @@ command = "keep"
         self.assertEqual(plan["report"]["change_count"], 1)
         setup.apply_plan(plan)
         self.assertTrue(all((self.home / ".local/bin" / name).is_symlink() for name in commands))
-        self.assertEqual(sum(bool(item.get("preserved_entrypoint")) for item in plan["report"]["files"]), 4)
+        self.assertEqual(sum(bool(item.get("preserved_entrypoint")) for item in plan["report"]["files"]), 6)
 
     def test_unrelated_command_symlinks_remain_rejected(self):
         target = self.write("unrelated-command", "#!/bin/sh\nexit 0\n")

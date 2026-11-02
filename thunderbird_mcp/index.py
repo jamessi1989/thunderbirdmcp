@@ -119,6 +119,10 @@ def default_db_path() -> Path:
     override_root = os.environ.get("XDG_DATA_HOME")
     if override_root and Path(override_root).expanduser().is_absolute():
         data = Path(override_root).expanduser()
+    elif sys.platform == "win32":
+        windows_root = os.environ.get("LOCALAPPDATA")
+        data = (Path(windows_root).expanduser() if windows_root and Path(windows_root).expanduser().is_absolute()
+                else Path.home() / "AppData" / "Local")
     elif sys.platform == "darwin":
         data = Path.home() / "Library" / "Application Support"
     else:
@@ -413,6 +417,8 @@ def reindex(
     A folder is re-parsed only when its mbox size or mtime changed since the
     last run, so day-to-day reindexing is cheap.
     """
+    from . import maildir, policy
+    policy.require("index", tool="reindex")
     started = time.time()
     profile = profile or find_profile()
     folders = discover_folders(profile)
@@ -420,9 +426,12 @@ def reindex(
 
     conn = connect(db_path)
     try:
+        maildir.ensure_schema(conn)
+        conn.commit()
         seen = {row["folder"]: row for row in conn.execute("SELECT * FROM folders")}
 
         for folder in folders:
+            is_maildir = isinstance(folder, maildir.MaildirFolder)
             prior = seen.get(folder.name)
             if (
                 not full
@@ -431,6 +440,7 @@ def reindex(
                 and prior["path"] == str(folder.path)
                 and prior["size"] == folder.size
                 and prior["mtime"] == folder.mtime
+                and (not is_maildir or maildir.fingerprint_matches(conn, folder))
             ):
                 stats.folders_skipped += 1
                 continue
@@ -445,31 +455,51 @@ def reindex(
             next_id = max(conn.execute("SELECT value FROM index_meta WHERE key='next_message_id'").fetchone()[0],
                           conn.execute("SELECT COALESCE(MAX(id),0)+1 FROM emails").fetchone()[0])
             count = 0
-            for m in _iter_messages(folder.path):
-                row_id = existing[m.stable_key].popleft() if existing[m.stable_key] else next_id
-                if row_id == next_id:
-                    next_id += 1
-                fields = ("folder", *m.__dataclass_fields__)
-                values = (folder.name, *(getattr(m, f) for f in m.__dataclass_fields__))
-                assignments = ",".join(f"{f}=excluded.{f}" for f in fields)
-                changed = " OR ".join(f"emails.{f} IS NOT excluded.{f}" for f in fields)
-                conn.execute(
-                    f"INSERT INTO emails(id,{','.join(fields)}) VALUES ({','.join('?' for _ in range(len(values)+1))}) "
-                    f"ON CONFLICT(id) DO UPDATE SET {assignments} WHERE {changed}", (row_id, *values))
-                links = message_ids(m.in_reply_to) + json.loads(m.references_json)
-                conn.execute("DELETE FROM message_links WHERE email_id=?", (row_id,))
-                conn.executemany("INSERT OR IGNORE INTO message_links(email_id,message_id) VALUES (?,?)",
-                                 [(row_id, link) for link in links])
-                count += 1
-            after = folder.path.stat()
-            if after.st_size != folder.size or after.st_mtime != folder.mtime:
+            changed_during_read = False
+            iterator = maildir.iter_messages(folder, conn, full=full or prior is None or
+                prior["schema_version"] != SCHEMA_VERSION) if is_maildir else _iter_messages(folder.path)
+            try:
+                for m in iterator:
+                    previous_id = getattr(m, "_maildir_previous_id", None)
+                    if previous_id is not None and previous_id in existing[m.stable_key]:
+                        existing[m.stable_key].remove(previous_id)
+                        row_id = previous_id
+                    else:
+                        row_id = existing[m.stable_key].popleft() if existing[m.stable_key] else next_id
+                    if row_id == next_id:
+                        next_id += 1
+                    fields = ("folder", *m.__dataclass_fields__)
+                    values = (folder.name, *(getattr(m, f) for f in m.__dataclass_fields__))
+                    assignments = ",".join(f"{f}=excluded.{f}" for f in fields)
+                    changed = " OR ".join(f"emails.{f} IS NOT excluded.{f}" for f in fields)
+                    conn.execute(
+                        f"INSERT INTO emails(id,{','.join(fields)}) VALUES ({','.join('?' for _ in range(len(values)+1))}) "
+                        f"ON CONFLICT(id) DO UPDATE SET {assignments} WHERE {changed}", (row_id, *values))
+                    links = message_ids(m.in_reply_to) + json.loads(m.references_json)
+                    conn.execute("DELETE FROM message_links WHERE email_id=?", (row_id,))
+                    conn.executemany("INSERT OR IGNORE INTO message_links(email_id,message_id) VALUES (?,?)",
+                                     [(row_id, link) for link in links])
+                    if is_maildir:
+                        maildir.record_entry(conn, folder, m, row_id)
+                    count += 1
+            except maildir.SnapshotChanged:
+                changed_during_read = True
+            if not is_maildir:
+                after = folder.path.stat()
+                changed_during_read = after.st_size != folder.size or after.st_mtime != folder.mtime
+            for ids in existing.values():
+                conn.executemany("DELETE FROM emails WHERE id=?", [(i,) for i in ids])
+            if is_maildir and not changed_during_read:
+                try:
+                    changed_during_read = not maildir.finish_folder(conn, folder)
+                except maildir.SnapshotChanged:
+                    changed_during_read = True
+            if changed_during_read:
                 conn.rollback()
                 stats.folders_deferred += 1
                 if progress:
                     progress(f"deferred changing folder {folder.name}; retaining prior index")
                 continue
-            for ids in existing.values():
-                conn.executemany("DELETE FROM emails WHERE id=?", [(i,) for i in ids])
             conn.execute("UPDATE index_meta SET value=? WHERE key='next_message_id'", (next_id,))
             conn.execute(
                 "INSERT INTO folders(folder, path, size, mtime, count, indexed_at, schema_version)"
@@ -489,6 +519,11 @@ def reindex(
         for name in stale:
             conn.execute("DELETE FROM emails WHERE folder = ?", (name,))
             conn.execute("DELETE FROM folders WHERE folder = ?", (name,))
+        maildir_names = {folder.name for folder in folders if isinstance(folder, maildir.MaildirFolder)}
+        for row in conn.execute("SELECT folder FROM maildir_folders").fetchall():
+            if row[0] not in maildir_names:
+                conn.execute("DELETE FROM maildir_entries WHERE folder=?", (row[0],))
+                conn.execute("DELETE FROM maildir_folders WHERE folder=?", (row[0],))
         conn.execute("UPDATE folders SET count=(SELECT count(*) FROM emails WHERE emails.folder=folders.folder)")
         conn.commit()
     finally:

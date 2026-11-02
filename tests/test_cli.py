@@ -23,6 +23,23 @@ class CliTests(unittest.TestCase):
             self.assertTrue(cli.dispatch(cli.parser().parse_args(["send", "abc", "--confirm"]))["sent"])
         send.assert_called_once_with("abc", retry_failed=False)
 
+    def test_save_draft_dispatches_without_sending(self):
+        with patch("thunderbird_mcp.server.save_draft_to_thunderbird", return_value={"saved": True}) as save, patch("thunderbird_mcp.server.send_draft") as send:
+            self.assertTrue(cli.dispatch(cli.parser().parse_args(["save-draft", "abc"]))["saved"])
+        save.assert_called_once_with("abc")
+        send.assert_not_called()
+
+    def test_native_draft_preview_directs_user_to_thunderbird(self):
+        with patch("thunderbird_mcp.server.get_draft", return_value={"status": "saved_to_thunderbird"}):
+            result = cli.dispatch(cli.parser().parse_args(["send", "abc"]))
+        self.assertIn("Thunderbird", result["next_step"])
+        self.assertNotIn("--confirm", result["next_step"])
+
+    def test_unsuccessful_native_save_exits_nonzero(self):
+        for result in ({"saved": False}, {"saved": None}, {"saved": True}):
+            with self.subTest(result=result), patch.object(cli, "dispatch", return_value=result), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["save-draft", "abc"]), 0 if result["saved"] else 1)
+
     def test_body_stdin_and_attachment_argument(self):
         with patch("sys.stdin", io.StringIO("First line\nSecond line")), patch("thunderbird_mcp.server.draft_email", return_value={"draft_id": "abc"}) as draft:
             cli.dispatch(cli.parser().parse_args(["draft", "--to", "person@example.test", "--subject", "A subject", "--body-file", "-", "--attach", "file with spaces.txt"]))

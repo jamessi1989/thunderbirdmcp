@@ -277,7 +277,7 @@ def _correct(word: str, conn) -> str | None:
     return max(hits, key=lambda h: (-h[1], doc[h[0]]))[0] if hits else None
 
 
-def _fts_expr(text: str, conn, op: str = "OR") -> str:
+def _fts_expr(text: str, conn, op: str = "OR", *, corrections: bool = True) -> str:
     # OR of terms: bm25 rewards matching more of them, and nothing is dropped
     # just because one word is missing. Prefix-match only longer words, so
     # "vm" does not expand to every word starting with "vm".
@@ -286,7 +286,7 @@ def _fts_expr(text: str, conn, op: str = "OR") -> str:
         if w in _STOP or len(w) < 2:
             continue
         alts = [f'"{w}"*' if len(w) >= 4 else f'"{w}"']
-        if (fix := _correct(w, conn)):
+        if corrections and (fix := _correct(w, conn)):
             alts.append(f'"{fix}"')
         parts.append("(" + " OR ".join(alts) + ")")
     return f" {op} ".join(parts)
@@ -304,11 +304,14 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
            recipient: str | None = None, since: str | None = None, until: str | None = None,
            has_attachment: bool | None = None, attachment: str | None = None,
            account_prefix: str | None = None,
-           deduplicate_threads: bool = True) -> list[dict]:
+           deduplicate_threads: bool = True, _candidate_limit: int = 200,
+           _return_all: bool = False) -> list[dict]:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
         raise ValueError("limit must be between 1 and 200")
     if not isinstance(raw, str) or len(raw) > 10_000:
         raise ValueError("query must be a string of at most 10000 characters")
+    if not isinstance(_candidate_limit, int) or not 1 <= _candidate_limit <= 5000:
+        raise ValueError("Candidate limit must be between 1 and 5000")
     text, f = _parse(raw)
     for name, value in (("folder", folder), ("from", sender), ("to", recipient), ("after", since), ("attachment", attachment)):
         if value is not None:
@@ -354,7 +357,12 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
         params.append(hi)
     filt = (" AND " + " AND ".join(where)) if where else ""
 
-    diagnostics = {"semantic": "disabled" if "vec" not in use else "not_indexed", "warnings": []}
+    terms = re.findall(r"\w+", text.lower(), re.UNICODE)
+    diagnostics = {"semantic": "disabled" if "vec" not in use else "not_indexed", "warnings": [],
+                   "filters": f, "supported_filters": ["from", "to", "folder", "after", "before", "has:attachment", "attachment"],
+                   "ignored_keyword_terms": sorted({w for w in terms if w in _STOP or len(w) < 2}),
+                   "literal_operator_terms": sorted(set(re.findall(r"(?<!\S)([A-Za-z_]+):", text))),
+                   "keyword_matched": 0, "candidate_limit": _candidate_limit}
     conn = _index.connect(db_path, read_only=True)
     try:
         ranks: dict[str, float] = {}
@@ -377,8 +385,12 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
             # Two keyword lists: messages with every term (precise; lets a rare word
             # like a project code win) and with any term (recall).
             for op in (("AND", "OR") if "fts" in use else ()):
-                expr = _fts_expr(text, conn, op)
+                expr = _fts_expr(text, conn, op, corrections=account_prefix is None)
                 if expr:
+                    if op == "OR":
+                        diagnostics["keyword_matched"] = conn.execute(
+                            f"SELECT COUNT(DISTINCT e.stable_key) FROM emails_fts JOIN emails e ON e.id=emails_fts.rowid WHERE emails_fts MATCH ?{filt}",
+                            [expr, *params]).fetchone()[0]
                     add(conn.execute(
                         f"SELECT {cols}, snippet(emails_fts, -1, '\x02', '\x03', ' … ', 18) AS snip, "
                         "(instr(highlight(emails_fts,4,'\x02','\x03'),'\x02')>0 OR "
@@ -388,7 +400,7 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
                         "instr(highlight(emails_fts,2,'\x02','\x03'),'\x02')>0 OR "
                         "instr(highlight(emails_fts,3,'\x02','\x03'),'\x02')>0) AS message_hit "
                         f"FROM emails_fts JOIN emails e ON e.id = emails_fts.rowid "
-                        f"WHERE emails_fts MATCH ?{filt} ORDER BY bm25(emails_fts, 10, 5, 1, 1, 1, 2) LIMIT 200",
+                        f"WHERE emails_fts MATCH ?{filt} ORDER BY bm25(emails_fts, 10, 5, 1, 1, 1, 2) LIMIT {_candidate_limit}",
                         [expr, *params]).fetchall())
 
             try:
@@ -404,7 +416,7 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
                         for r in conn.execute(f"SELECT stable_key,message_id FROM emails e WHERE 1=1{filt}", params):
                             eligible.update((r["stable_key"], r["message_id"]))
                         ranked = [key for key in ranked if key in eligible]
-                    top = ranked[:400]
+                    top = ranked[:max(400, _candidate_limit)]
                     if top:
                         ph = ",".join("?" for _ in top)
                         by_key = {}
@@ -421,9 +433,22 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
                 _logger.warning("Semantic search failed; using keyword results", exc_info=False)
         else:
             # Filters only: newest first.
+            diagnostics["keyword_matched"] = conn.execute(
+                f"SELECT COUNT(DISTINCT e.stable_key) FROM emails e WHERE 1=1{filt}", params).fetchone()[0]
             add(conn.execute(
                 f"SELECT {cols}, NULL AS snip FROM emails e WHERE 1=1{filt} "
-                "ORDER BY e.date_ts DESC LIMIT 200", params).fetchall())
+                f"ORDER BY e.date_ts DESC,e.id DESC LIMIT {_candidate_limit}", params).fetchall())
+
+        if account_prefix is not None:
+            diagnostics["spelling_correction"] = "disabled_for_account_scope"
+            diagnostics["unmatchable_keyword_terms"] = [w for w in dict.fromkeys(terms)
+                if w not in _STOP and len(w) >= 2 and not conn.execute(
+                    f"SELECT 1 FROM emails_fts JOIN emails e ON e.id=emails_fts.rowid WHERE emails_fts MATCH ?{filt} LIMIT 1",
+                    ['"' + w + '"' + ("*" if len(w) >= 4 else ""), *params]).fetchone()]
+        else:
+            diagnostics["unmatchable_keyword_terms"] = [w for w in dict.fromkeys(terms)
+                if w not in _STOP and len(w) >= 2 and not _correct(w, conn)
+                and not conn.execute("SELECT 1 FROM emails_vocab WHERE term LIKE ? LIMIT 1", (w + "%" if len(w) >= 4 else w,)).fetchone()]
 
         now = time.time()
         def score(k):
@@ -447,9 +472,10 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
                 continue
             seen.add(sig)
             out.append(_result(r))
-            if len(out) == limit:
-                break
-        return SearchResults(out, diagnostics=diagnostics)
+        diagnostics["ranked_candidates"] = len(out)
+        diagnostics["candidate_coverage_limited"] = diagnostics["keyword_matched"] > len(rows) or len(rows) >= _candidate_limit
+        diagnostics["omitted_ranked_candidates"] = 0 if _return_all else max(0, len(out) - limit)
+        return SearchResults(out if _return_all else out[:limit], diagnostics=diagnostics)
     finally:
         conn.close()
 

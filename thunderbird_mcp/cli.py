@@ -44,12 +44,24 @@ def parser() -> argparse.ArgumentParser:
     command("accounts", "List mail accounts and sending identities without credentials")
     auth_status = command("auth-status", "Inspect OAuth token availability without revealing tokens")
     auth_status.add_argument("--account", help="Thunderbird account ID")
-    auth_status.add_argument("--protocol", choices=("imap", "smtp"), default="imap")
+    auth_status.add_argument("--protocol", choices=("imap", "smtp", "gmail", "graph"), default="imap")
     auth_import = command("auth-import", "Import authorized OAuth token JSON into the system keyring")
     auth_import.add_argument("--account", help="Thunderbird account ID")
-    auth_import.add_argument("--protocol", choices=("imap", "smtp"), default="imap")
+    auth_import.add_argument("--protocol", choices=("imap", "smtp", "gmail", "graph"), default="imap")
     auth_import.add_argument("--token-file", required=True, metavar="PATH",
                              help="Private token JSON file, or - for stdin; tokens are never command arguments")
+    auth_guide = command("auth-guide", "Show provider registration/scopes and consent instructions")
+    auth_login = command("auth-login", "Enroll or reconnect with browser consent and PKCE")
+    for sub in (auth_guide, auth_login):
+        sub.add_argument("provider", choices=("gmail", "graph"))
+        sub.add_argument("--protocol", choices=("imap", "smtp", "gmail", "graph"))
+        sub.add_argument("--mode", choices=("read-only", "draft-only", "send-only", "full"), default="read-only")
+        sub.add_argument("--tenant", default="common")
+    auth_login.add_argument("--client-id", required=True)
+    auth_login.add_argument("--account")
+    auth_login.add_argument("--client-secret", action="store_true", help="Prompt privately for an OAuth client secret")
+    auth_login.add_argument("--no-browser", action="store_true")
+    auth_login.add_argument("--port", type=int, default=0)
     password_set = command("password-set", "Save an account-specific password in the system keyring")
     password_set.add_argument("--account", help="Thunderbird account ID")
     password_set.add_argument("--protocol", choices=("imap", "smtp"), default="imap")
@@ -95,20 +107,28 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("--cc", nargs="+")
     draft.add_argument("--bcc", nargs="+")
     draft.add_argument("--account", help="Sending account ID from tbmail accounts")
+    draft.add_argument("--identity", help="Configured sender identity ID or email")
+    draft.add_argument("--html-file", help="Optional UTF-8 HTML alternative; plain body remains required")
     _add_body(draft)
     reply = command("reply", "Prepare a reply draft to a message reference")
     reply.add_argument("reference")
     reply.add_argument("--all", action="store_true", dest="reply_all", help="Reply to all original recipients")
     reply.add_argument("--account", help="Override the original message's sending account")
+    reply.add_argument("--identity")
+    reply.add_argument("--html-file")
     _add_body(reply)
     drafts = command("drafts", "List drafts or inspect one before sending")
     drafts.add_argument("draft_id", nargs="?")
     drafts.add_argument("--limit", type=int, default=20)
     drafts.add_argument("--account", help="Filter the draft list by account")
+    save_draft = command("save-draft", "Save a local draft in Thunderbird's IMAP Drafts folder without sending")
+    save_draft.add_argument("draft_id")
+    save_draft.add_argument("--revision", type=int)
     send = command("send", "Send an existing draft; --confirm explicitly authorizes delivery")
     send.add_argument("draft_id")
     send.add_argument("--confirm", action="store_true", help="Send this draft now (otherwise shows the draft)")
     send.add_argument("--retry-failed", action="store_true", help="Retry a known failure before delivery after fixing its cause")
+    send.add_argument("--revision", type=int, help="Reviewed revision, required after editing")
     attachments = command("attachments", "List attachments in a local or live message")
     attachments.add_argument("reference")
     attachment_text = command("attachment-text", "Read plain text from one document attachment")
@@ -122,6 +142,46 @@ def parser() -> argparse.ArgumentParser:
     attachment.add_argument("reference")
     attachment.add_argument("attachment_id")
     attachment.add_argument("destination")
+    identities = command("identities", "List configured sender identities")
+    identities.add_argument("--account")
+    forward = command("forward", "Prepare a forward with explicit recipients and selected attachment IDs")
+    forward.add_argument("reference")
+    forward.add_argument("--to", nargs="+", required=True)
+    forward.add_argument("--body", default="")
+    forward.add_argument("--attachment-id", action="append", type=int, default=[])
+    forward.add_argument("--account")
+    forward.add_argument("--identity")
+    for name in ("edit-draft", "discard-draft", "reconcile-draft"):
+        sub = command(name, "Update a saved draft using its reviewed revision")
+        sub.add_argument("draft_id")
+        sub.add_argument("--revision", type=int, required=True)
+        if name == "edit-draft":
+            sub.add_argument("--changes", required=True, help="JSON object of changed fields")
+        if name == "reconcile-draft":
+            sub.add_argument("reference", help="Current live reference from Thunderbird Drafts")
+    flags = command("flags", "Preview read/star/keyword changes; use --apply to mutate")
+    flags.add_argument("references", nargs="+")
+    state = flags.add_mutually_exclusive_group()
+    state.add_argument("--read", dest="read_state", action="store_true", default=None)
+    state.add_argument("--unread", dest="read_state", action="store_false")
+    star = flags.add_mutually_exclusive_group()
+    star.add_argument("--star", dest="star_state", action="store_true", default=None)
+    star.add_argument("--unstar", dest="star_state", action="store_false")
+    flags.add_argument("--add-keyword", action="append")
+    flags.add_argument("--remove-keyword", action="append")
+    flags.add_argument("--apply", action="store_true")
+    organize = command("organize", "Preview move/copy/archive/trash/restore/delete of live references")
+    organize.add_argument("action", choices=("move", "copy", "archive", "trash", "restore", "delete"))
+    organize.add_argument("references", nargs="+")
+    organize.add_argument("--destination")
+    organize.add_argument("--apply", action="store_true")
+    organize.add_argument("--confirm-permanent", action="store_true")
+    call = command("call", "Call any available MCP tool with JSON arguments, under the same policy")
+    call.add_argument("tool")
+    arguments = call.add_mutually_exclusive_group()
+    arguments.add_argument("--args", default="{}", help="JSON argument object")
+    arguments.add_argument("--args-file", help="JSON file, or - for stdin")
+    command("tools", "List available MCP tools and input schemas under the current policy")
     return root
 
 
@@ -129,13 +189,77 @@ def dispatch(args: argparse.Namespace) -> dict:
     # Lazy import keeps --help/setup usable without starting models or mail I/O.
     from . import server
 
+    if args.command in {"auth-guide", "auth-login"}:
+        from . import enrollment
+        if args.command == "auth-guide":
+            return enrollment.guide(args.provider, protocol=args.protocol, mode=args.mode, tenant=args.tenant)
+        import getpass
+        secret = getpass.getpass("OAuth client secret: ") if args.client_secret else None
+        def ready(url, redirect_uri):
+            print("Open the consent URL in your browser:\n" + url + "\nCallback: " + redirect_uri, file=sys.stderr)
+        return enrollment.enroll(args.provider, client_id=args.client_id, account=args.account,
+                                  protocol=args.protocol, mode=args.mode, tenant=args.tenant,
+                                  client_secret=secret, port=args.port, open_browser=not args.no_browser,
+                                  on_ready=ready)
+
+    if args.command in {"call", "tools"}:
+        import asyncio
+        if args.command == "tools":
+            return {"tools": [tool.model_dump(mode="json") for tool in asyncio.run(server.mcp.list_tools())]}
+        raw = ((sys.stdin.read(1024 * 1024 + 1) if args.args_file == "-" else Path(args.args_file).read_text())
+               if args.args_file else args.args)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("Tool arguments exceed the 1 MiB limit")
+        values = json.loads(raw)
+        if not isinstance(values, dict):
+            raise ValueError("Tool arguments must be a JSON object")
+        tool = server.mcp._tool_manager.get_tool(args.tool)
+        if tool is None:
+            raise ValueError("Unknown MCP tool; use tbmail tools")
+        result = asyncio.run(server.mcp.call_tool(args.tool, values))
+        if isinstance(result, tuple) and len(result) == 2:
+            return result[1]
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, list) and len(result) == 1 and getattr(result[0], "type", None) == "text":
+            try:
+                value = json.loads(result[0].text)
+            except (ValueError, TypeError):
+                pass
+            else:
+                if isinstance(value, dict):
+                    return value
+        return {"content": [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in result]}
+    if args.command == "identities":
+        return server.list_identities(args.account)
+    if args.command == "forward":
+        return server.draft_forward(args.reference, args.to, args.body, attachment_ids=args.attachment_id,
+                                    account=args.account, identity=args.identity)
+    if args.command == "edit-draft":
+        return server.edit_draft(args.draft_id, args.revision, json.loads(args.changes))
+    if args.command == "discard-draft":
+        return server.discard_draft(args.draft_id, args.revision)
+    if args.command == "reconcile-draft":
+        return server.reconcile_draft(args.draft_id, args.reference, args.revision)
+    if args.command == "flags":
+        return server.update_email_flags(args.references, read=args.read_state, flagged=args.star_state,
+                                         add_keywords=args.add_keyword, remove_keywords=args.remove_keyword,
+                                         dry_run=not args.apply)
+    if args.command == "organize":
+        return server.organize_emails(args.references, args.action, args.destination,
+                                      dry_run=not args.apply, confirm_permanent=args.confirm_permanent)
+
     if args.command == "status":
         return server.mail_status(check_network=args.network, account=args.account)
     if args.command == "accounts":
         return server.list_accounts()
     if args.command in ("auth-status", "auth-import"):
         from . import oauth, outgoing
-        config = outgoing.account_config(args.account)
+        if args.protocol in {"gmail", "graph"}:
+            from . import providers
+            config = providers.config(args.protocol, account=args.account)
+        else:
+            config = outgoing.account_config(args.account)
         if args.command == "auth-status":
             return oauth.token_status(config, args.protocol)
         maximum = 64 * 1024
@@ -185,20 +309,29 @@ def dispatch(args: argparse.Namespace) -> dict:
         return server.reindex(full=args.full, embeddings=args.embeddings)
     if args.command == "draft":
         return server.draft_email(to=args.to, subject=args.subject, body=_body(args),
-            cc=args.cc, bcc=args.bcc, attachments=args.attach or None, account=args.account)
+            cc=args.cc, bcc=args.bcc, attachments=args.attach or None, account=args.account,
+            identity=args.identity, html_body=Path(args.html_file).read_text(encoding="utf-8") if args.html_file else None)
     if args.command == "reply":
         return server.draft_reply(args.reference, body=_body(args), reply_all=args.reply_all,
-            attachments=args.attach or None, account=args.account)
+            attachments=args.attach or None, account=args.account,
+            identity=args.identity, html_body=Path(args.html_file).read_text(encoding="utf-8") if args.html_file else None)
     if args.command == "drafts":
         if args.draft_id and args.account:
             raise ValueError("A draft ID already identifies its account; --account only filters the list.")
         return server.get_draft(args.draft_id) if args.draft_id else server.list_drafts(limit=args.limit, account=args.account)
+    if args.command == "save-draft":
+        return (server.save_draft_to_thunderbird(args.draft_id, revision=args.revision) if args.revision is not None
+                else server.save_draft_to_thunderbird(args.draft_id))
     if args.command == "send":
         if args.confirm:
-            return server.send_draft(args.draft_id, retry_failed=args.retry_failed)
+            return (server.send_draft(args.draft_id, retry_failed=args.retry_failed, revision=args.revision)
+                    if args.revision is not None else server.send_draft(args.draft_id, retry_failed=args.retry_failed))
         draft = server.get_draft(args.draft_id)
         if "error" not in draft:
-            draft = {**draft, "preview": True, "next_step": f"To send this draft: tbmail send {args.draft_id} --confirm"}
+            next_step = ("Open Thunderbird's Drafts folder to edit or send this draft."
+                         if draft.get("status") in {"saving_to_thunderbird", "saved_to_thunderbird", "thunderbird_save_uncertain"}
+                         else f"To send this draft: tbmail send {args.draft_id} --confirm")
+            draft = {**draft, "preview": True, "next_step": next_step}
         return draft
     if args.command == "attachments":
         return server.list_attachments(args.reference)
@@ -296,13 +429,16 @@ def render(result: dict, args: argparse.Namespace) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     from .runtime import configure_session_environment
+    from mcp.server.fastmcp.exceptions import ToolError
     configure_session_environment()
     try:
         result = dispatch(args)
-    except (OSError, ValueError, RuntimeError, LookupError, sqlite3.Error) as error:
+    except (OSError, ValueError, RuntimeError, LookupError, sqlite3.Error, ToolError) as error:
         result = {"error": str(error)}
     print(render(result, args))
-    failed = bool(result.get("error")) or result.get("ok") is False
+    failed = bool(result.get("error")) or result.get("ok") is False or result.get("complete") is False
+    if args.command == "save-draft":
+        failed = failed or result.get("saved") is not True
     if args.command == "send" and args.confirm:
         failed = failed or result.get("status") in {"failed", "uncertain", "partially_sent", "sending"}
         failed = failed or result.get("sent") is False or bool(result.get("delivery_uncertain"))

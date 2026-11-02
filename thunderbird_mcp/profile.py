@@ -20,6 +20,10 @@ def _candidate_roots() -> list[Path]:
     ]
     if sys.platform == "darwin":
         roots.insert(0, home / "Library" / "Thunderbird")
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        roaming = Path(appdata).expanduser() if appdata and Path(appdata).expanduser().is_absolute() else home / "AppData" / "Roaming"
+        roots.insert(0, roaming / "Thunderbird")
     return roots
 
 
@@ -57,6 +61,8 @@ def find_profile() -> Path:
             if not path:
                 continue
             is_relative = cfg[section].get("IsRelative", "1") == "1"
+            if sys.platform == "win32":
+                path = path.replace("\\", "/")
             profile_dir = (root / path) if is_relative else Path(path)
             if profile_dir.is_dir():
                 profiles.append(profile_dir)
@@ -110,7 +116,7 @@ def _folder_name(profile: Path, mbox: Path) -> str:
 
 
 def discover_folders(profile: Path) -> list[Folder]:
-    """Return every mbox folder in the profile.
+    """Return Thunderbird mbox and Maildir folders in the profile.
 
     A file is treated as an mbox folder iff a sibling ``<name>.msf`` summary
     file exists — that is exactly how Thunderbird marks a real mail folder, and
@@ -139,5 +145,7 @@ def discover_folders(profile: Path) -> list[Folder]:
                     mtime=st.st_mtime,
                 )
             )
+    from .maildir import discover
+    folders.extend(discover(profile))
     folders.sort(key=lambda f: f.name.lower())
     return folders
