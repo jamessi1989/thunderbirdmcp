@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+# the built mail index (can be large; rebuilt from Thunderbird on demand)
+*.sqlite
+*.sqlite-*
+embed.log
+web-test.log
+moves.jsonl
+*.sqlite.bak-*
+backups/
+exports/
+*.log
+.pytest_cache/
+.ruff_cache/
+# Local retrieval examples refer to the owner's real mailbox.
+/eval/
+*.eml
+*.mbox
+*.msf
+.env
+.env.*
+!.env.example
+*.thunderbird-backup-*
+/dist/
+/build/
+*.egg-info/

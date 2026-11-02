@@ -1,0 +1,23 @@
+# Local mail search web app. Bound to loopback, behind basic auth.
+# Install: cp systemd/* ~/.config/systemd/user/ && systemctl --user daemon-reload
+#          systemctl --user enable --now mail-search.service mail-index.timer
+
+[Unit]
+Description=Mail search web app (local Thunderbird index)
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/thunderbirdmcp
+UMask=0077
+Environment=TB_EMBED_THREADS=2
+Environment=MAIL_WEB_HOST=127.0.0.1
+Environment=MAIL_WEB_PORT=3458
+ExecStart=%h/.local/bin/uv run --locked thunderbird-mail-web
+# Restart after transient startup failures.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

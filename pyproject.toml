@@ -1,0 +1,30 @@
+[project]
+name = "thunderbird-mcp"
+version = "0.2.0"
+description = "Search, reference, read, and send Thunderbird mail from terminal MCP clients"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastembed>=0.8.1",
+    "keyring>=25.7.0",
+    "mcp[cli]>=1.28.1,<2",
+    "numpy>=2.2.6",
+    "rapidfuzz>=3.14.5",
+    "tomlkit>=0.13,<1",
+]
+
+[project.scripts]
+thunderbird-mcp = "thunderbird_mcp.server:main"
+thunderbird-mcp-index = "thunderbird_mcp.index:cli"
+thunderbird-mcp-embed = "thunderbird_mcp.search:cli"
+thunderbird-mail-web = "thunderbird_mcp.web:main"
+thunderbird-mail = "thunderbird_mcp.cli:main"
+tbmail = "thunderbird_mcp.cli:main"
+thunderbird-mcp-setup = "thunderbird_mcp.setup:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["thunderbird_mcp"]

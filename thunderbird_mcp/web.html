@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mail Search</title>
+<style>
+:root {
+  --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1d1b; --muted: #6d6b64; --line: #e3e1da;
+  --accent: #2f5d50; --hit: #f3e3a3; --sel: #e8efe9;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161715; --panel: #1e1f1c; --ink: #e8e6df; --muted: #9a978d; --line: #2d2e2a;
+          --accent: #8fc1ad; --hit: #5a4d1c; --sel: #25302b; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink);
+       font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 12px 16px;
+         border-bottom: 1px solid var(--line); }
+#q { width: 100%; font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 8px;
+     border: 1px solid var(--line); background: var(--panel); color: var(--ink); outline: none; }
+#q:focus { border-color: var(--accent); }
+.hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.hint code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+main { display: grid; grid-template-columns: minmax(320px, 40%) 1fr; height: calc(100% - 88px); }
+#list { overflow-y: auto; border-right: 1px solid var(--line); }
+.r { padding: 10px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.r.sel { background: var(--sel); box-shadow: inset 3px 0 var(--accent); }
+.r .top { display: flex; gap: 8px; color: var(--muted); font-size: 12px; }
+.r .top .from { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.r .subj { font-weight: 600; margin: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r .snip { color: var(--muted); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2;
+           -webkit-box-orient: vertical; overflow: hidden; }
+mark { background: var(--hit); color: inherit; border-radius: 2px; }
+.tag { border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+#view { overflow-y: auto; padding: 20px 28px; }
+#view h1 { font-size: 18px; margin: 0 0 8px; }
+#view .meta { color: var(--muted); font-size: 13px; margin-bottom: 12px; word-break: break-word; }
+#view .body { white-space: pre-wrap; word-break: break-word; font-size: 14px;
+              border-top: 1px solid var(--line); padding-top: 14px; }
+button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--accent);
+         background: transparent; color: var(--accent); cursor: pointer; }
+.empty { color: var(--muted); padding: 24px 16px; }
+#back { display: none; margin-bottom: 12px; }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; }
+  #view { display: none; padding: 16px; }
+  body.reading #list { display: none; }
+  body.reading #view { display: block; }
+  #back { display: inline-block; }
+  .hint { display: none; }
+  main { height: calc(100% - 64px); }
+}
+</style>
+</head>
+<body>
+<header>
+  <input id="q" type="search" placeholder="Search mail…" autocomplete="off" autofocus>
+  <div class="hint"><span id="status" style="float:right"></span>
+    Filters: <code>from:alex</code> <code>folder:invoices</code> <code>after:2025-01-01</code> <code>before:2026-01-01</code>
+    · Keys: <code>/</code> search · <code>j</code>/<code>k</code> move · <code>o</code> open in Thunderbird
+  </div>
+</header>
+<main>
+  <div id="list"><div class="empty">Type to search. Matches on meaning too, so plain descriptions work.</div></div>
+  <div id="view"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let results = [], sel = -1, timer, deepTimer, seq = 0, viewSeq = 0, current = null;
+
+function snippet(s) {  // server marks hits with \x02 … \x03
+  return esc(s).replace(/\x02/g, "<mark>").replace(/\x03/g, "</mark>");
+}
+
+async function run(deep) {
+  const q = $("#q").value.trim(), my = ++seq;
+  if (!q) { results = []; render(); return; }
+  $("#status").textContent = deep ? "refining…" : "";
+  let r;
+  try {
+    r = await fetch(`/api/search?deep=${deep ? 1 : 0}&q=` + encodeURIComponent(q)).then(r => r.json());
+  } catch {
+    if (my === seq) $("#status").textContent = "Search unavailable. Try again.";
+    return;
+  }
+  if (my !== seq) return;  // a newer query already went out
+  if (r.error) { $("#status").textContent = r.error; return; }
+  const keepId = results[sel]?.id;
+  results = r.results;
+  // On the refined pass keep the user's place if they already moved.
+  sel = deep && keepId != null && sel > 0 ? Math.max(0, results.findIndex(x => x.id === keepId)) : (results.length ? 0 : -1);
+  $("#status").textContent = "";
+  render();
+  if (sel >= 0 && innerWidth > 760 && (!deep || current?.id !== results[sel].id)) show(sel);
+  if (!deep) deepTimer = setTimeout(() => run(true), 500);
+}
+
+function render() {
+  if (!results.length) {
+    $("#list").innerHTML = `<div class="empty">${$("#q").value.trim() ? "No matches." : "Type to search."}</div>`;
+    return;
+  }
+  $("#list").innerHTML = results.map((r, i) => `
+    <div class="r${i === sel ? " sel" : ""}" data-i="${i}">
+      <div class="top"><span class="from">${esc(r.from.replace(/<.*>/, "").replace(/"/g, "") || r.from)}</span>
+        <span class="tag">${esc(r.folder)}</span><span>${esc(r.date)}</span></div>
+      <div class="subj">${esc(r.subject)}</div>
+      ${r.snippet ? `<div class="snip">${snippet(r.snippet)}</div>` : ""}
+    </div>`).join("");
+}
+
+async function show(i) {
+  const my = ++viewSeq;
+  sel = i; render();
+  document.querySelector(".r.sel")?.scrollIntoView({block: "nearest"});
+  const m = await fetch("/api/email/" + results[i].id).then(r => r.json());
+  if (my !== viewSeq) return;
+  current = m;
+  if (m.error) { $("#view").innerHTML = `<div class="empty">${esc(m.error)}</div>`; return; }
+  $("#view").innerHTML = `
+    <button id="back">← Results</button>
+    <h1>${esc(m.subject)}</h1>
+    <div class="meta">${esc(m.from)} → ${esc(m.to)}<br>${esc(m.date)} · ${esc(m.folder)}</div>
+    <button id="open">Open in Thunderbird</button>
+    <button id="copy-reference">Copy mail reference</button>
+    <input id="mail-reference" aria-label="Mail reference for terminal sessions" readonly
+           style="display:none;width:100%;margin:8px 0" value="${esc(m.reference || '')}">
+    <div class="body">${esc(m.body)}</div>`;
+  $("#view").scrollTop = 0;
+  $("#open").onclick = openTb;
+  $("#copy-reference").onclick = async () => {
+    const reference = m.reference;
+    if (!reference) return;
+    try {
+      await navigator.clipboard.writeText(reference);
+      $("#copy-reference").textContent = "Reference copied";
+    } catch {
+      const input = $("#mail-reference");
+      input.style.display = "block"; input.focus(); input.select();
+      $("#copy-reference").textContent = "Select and copy reference";
+    }
+  };
+  $("#back").onclick = () => document.body.classList.remove("reading");
+  document.body.classList.add("reading");
+}
+
+async function openTb() {
+  if (!current?.message_id) return;
+  await fetch("/api/open", {method: "POST", headers: {"content-type": "application/json"},
+                            body: JSON.stringify({message_id: current.message_id})});
+}
+
+$("#q").addEventListener("input", () => {
+  clearTimeout(timer); clearTimeout(deepTimer); timer = setTimeout(() => run(false), 200);
+});
+$("#list").addEventListener("click", e => { const r = e.target.closest(".r"); if (r) show(+r.dataset.i); });
+document.addEventListener("keydown", e => {
+  if (e.target === $("#q")) {
+    if (e.key === "ArrowDown" || e.key === "Enter") { e.preventDefault(); $("#q").blur(); if (sel >= 0) show(sel); }
+    return;
+  }
+  if (e.key === "/") { e.preventDefault(); $("#q").focus(); $("#q").select(); }
+  else if ((e.key === "j" || e.key === "ArrowDown") && sel < results.length - 1) show(sel + 1);
+  else if ((e.key === "k" || e.key === "ArrowUp") && sel > 0) show(sel - 1);
+  else if (e.key === "o") openTb();
+});
+</script>
+</body>
+</html>
