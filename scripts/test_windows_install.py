@@ -64,7 +64,7 @@ def verify(root: Path, *, uv: str, wheel: Path, constraints: Path | None) -> dic
     def run(label, args):
         return run_command(label, [str(python), *args], env=env, cwd=working)
     info = decoded("installed paths", run("installed paths", ["-c",
-        "import importlib.metadata,json,sys; from thunderbird_mcp import index; "
+        "import importlib.metadata,json,sys,fastembed,onnxruntime; from thunderbird_mcp import index; "
         "from keyring.backends.Windows import WinVaultKeyring; "
         "print(json.dumps({'version':importlib.metadata.version('thunderbird-mcp'),"
         "'module':index.__file__,'database':str(index.default_db_path()),'keyring_backend':WinVaultKeyring.__name__}))"]))

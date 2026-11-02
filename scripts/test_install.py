@@ -198,9 +198,9 @@ def verify(root: Path, *, uv: str, wheel: Path | None, constraints: Path | None 
     sentinel.write_text("synthetic sentinel", encoding="utf-8")
     env.update(CODEX_HOME=str(outside), CLAUDE_CONFIG_DIR=str(outside), XDG_CONFIG_HOME=str(outside))
     info = decoded("installed imports", run_command("installed imports", [str(python), "-c",
-        "import importlib.metadata,json,sys; from thunderbird_mcp import index; "
+        "import importlib.metadata,json,sys,fastembed,onnxruntime; from thunderbird_mcp import index; "
         "print(json.dumps({'version':importlib.metadata.version('thunderbird-mcp'),'module':index.__file__,"
-        "'prefix':sys.prefix,'base_prefix':sys.base_prefix,'database':str(index.default_db_path())}))"], env=env, cwd=working))
+        "'prefix':sys.prefix,'base_prefix':sys.base_prefix,'database':str(index.default_db_path()),'onnxruntime':onnxruntime.__version__}))"], env=env, cwd=working))
     require(Path(info["module"]).resolve().is_relative_to(environment.resolve()), "The installed package leaked imports from outside the fresh venv")
     require(info["prefix"] != info["base_prefix"], "Checks did not run in an isolated virtual environment")
     database = Path(info["database"])
@@ -273,6 +273,7 @@ def verify(root: Path, *, uv: str, wheel: Path | None, constraints: Path | None 
     return {"ok": True, "platform": platform.system(), "python": platform.python_version(),
             "version": info["version"], "wheel": wheel.name, "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
             "fresh_venv": True, "isolated_home": True, "installed_imports": True, "unrelated_cwd": True,
+            "embedding_runtime_import": info["onnxruntime"],
             "missing_profile_guidance": True, "user_data_directory": True,
             "setup": {"preview": True, "apply": True, "idempotent": True, "clients": ["codex", "claude", "opencode"]},
             "launchers": True, "terminal_search": True, "relative_attachment_body_paths": True,
