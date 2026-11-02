@@ -46,6 +46,10 @@ The macOS release job uses the supported `macos-15-intel` image: GitHub's arm64
 runner pool reported capacity failures before acquiring a runner. This changes
 the execution architecture, not the required suite/benchmark/install checks;
 the current release does not claim a completed Apple Silicon CI run.
+That Intel job also exposed a real installation gap: newer ONNX Runtime wheels
+omit Intel macOS. The package now selects the available 1.23.x runtime there
+and declares Intel Python 3.10–3.13 support; other platforms retain their locked
+runtime versions. The full required macOS checks run against this dependency set.
 The native Windows
 isolation check is [CI run 41531190251](https://github.com/jamessi1989/thunderbirdmcp/actions/runs/41531190251),
 whose Windows install job passed; the final integrated release has its own CI.

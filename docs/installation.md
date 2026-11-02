@@ -14,6 +14,13 @@ directly and does not need a local index.
 - Thunderbird for account settings and, for local search, downloaded messages.
 - A working system keyring for stored IMAP/SMTP credentials.
 
+On **Intel macOS**, use Python 3.10–3.13 (CI uses 3.12). The package selects
+ONNX Runtime 1.23.x there because newer releases no longer publish Intel Mac
+wheels; Python 3.14+ on Intel macOS is outside the supported dependency set.
+Apple Silicon, Linux and Windows retain their normal platform-specific runtime
+resolution. The [published wheel files](https://pypi.org/project/onnxruntime/1.23.2/#files)
+and lockfile make this boundary explicit.
+
 Linux is the primary tested desktop. macOS has profile discovery and automated
 package/setup checks, but a successful CI run does not verify a real Thunderbird
 desktop, keychain, and AI-client combination. Current source includes native
