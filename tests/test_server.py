@@ -50,6 +50,34 @@ class ReplyRecipientsTests(unittest.TestCase):
         self.assertEqual(result["to"], ["person@example.test"])
         self.assertEqual(result["subject"], "Re: Follow up")
 
+    def test_reply_uses_account_bound_to_live_reference(self):
+        from thunderbird_mcp import server
+        message = {"account_id": "account2", "from": "sender@example.test",
+                   "subject": "An update", "message_id": "<update@example.test>"}
+        with patch.object(server._messages, "get_email", return_value=message), \
+             patch.object(server._outgoing, "account_config", return_value={"from_email": "me@example.test"}) as config, \
+             patch.object(server._outgoing, "prepare_draft", return_value={"draft_id": "synthetic"}) as prepare:
+            server.draft_reply("thunderbird://imap/fixture", "Reviewed text")
+        config.assert_called_once_with("account2")
+        self.assertEqual(prepare.call_args.kwargs["account"], "account2")
+
+    def test_reply_does_not_guess_between_unknown_local_accounts(self):
+        from thunderbird_mcp import server
+        with patch.object(server._messages, "get_email", return_value={"folder": "Local Folders/Archive"}), \
+             patch.object(server._outgoing, "infer_account", return_value=None), \
+             patch.object(server._outgoing, "list_accounts", return_value={"accounts": [{"account_id": "account1"}, {"account_id": "account2"}]}), \
+             patch.object(server._outgoing, "prepare_draft") as prepare:
+            with self.assertRaisesRegex(ValueError, "Select an account explicitly"):
+                server.draft_reply("42", "Reviewed text")
+        prepare.assert_not_called()
+
+    def test_live_resource_preserves_encoded_folder_segments(self):
+        from thunderbird_mcp import server
+        folder = "Archive%2F100%25%20complete"
+        with patch.object(server._messages, "get_email", return_value={"body": "fixture"}) as read:
+            json.loads(server.live_message_resource("account1", "fingerprint", folder, "11", "22"))
+        read.assert_called_once_with(reference=f"thunderbird://imap/account1/fingerprint/{folder}/11/22")
+
 
 class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tools_resources_prompts_search_read_and_draft(self):
@@ -66,6 +94,7 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
             message["Message-ID"] = "<integration@example.test>"
             message["Date"] = "Mon, 02 Nov 2026 09:00:00 +0000"
             message.set_content("Fixture body for protocol verification.")
+            message.add_attachment("The Zephyrlattice release is approved.\n", subtype="plain", filename="release.txt")
             box = mailbox.mbox(path)
             box.add(message)
             box.flush()
@@ -84,6 +113,7 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
                 'user_pref("mail.smtpserver.smtp1.username", "test");',
                 'user_pref("mail.server.server1.hostname", "imap.example.test");',
                 'user_pref("mail.server.server1.userName", "test");',
+                'user_pref("mail.server.server1.directory-rel", "[ProfD]ImapMail/mail.example.test");',
             ]))
             database = root / "mail.sqlite"
             index.reindex(db_path=database, profile=profile)
@@ -101,9 +131,14 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(initialization.serverInfo.name, "thunderbird")
                     tools = {tool.name: tool for tool in (await session.list_tools()).tools}
                     self.assertTrue({"search_email", "draft_reply", "send_draft", "get_email_reference",
-                                     "get_thread", "mail_status", "export_attachment"} <= set(tools))
+                                     "get_thread", "mail_status", "export_attachment", "search_live_email",
+                                     "list_accounts", "get_attachment_text"} <= set(tools))
                     self.assertTrue(tools["search_email"].annotations.readOnlyHint)
                     self.assertFalse(tools["send_draft"].annotations.readOnlyHint)
+                    self.assertTrue(tools["search_live_email"].annotations.readOnlyHint)
+                    self.assertTrue(tools["search_live_email"].annotations.openWorldHint)
+                    self.assertIn("account", tools["draft_email"].inputSchema["properties"])
+                    self.assertIn("has_attachment", tools["search_email"].inputSchema["properties"])
                     self.assertIn("find_mail", [p.name for p in (await session.list_prompts()).prompts])
                     templates = await session.list_resource_templates()
                     self.assertIn("thunderbird://message/{key}",
@@ -124,6 +159,17 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(resource_message["message_id"], "<integration@example.test>")
                     citation = await call("get_email_reference", {"reference": reference})
                     self.assertEqual(citation["reference"], reference)
+                    accounts = await call("list_accounts", {})
+                    self.assertEqual(accounts["default_account"], "account1")
+                    scoped = await call("search_email", {"query": "integration", "account": "account1", "semantic": False})
+                    self.assertEqual(scoped["count"], 1)
+                    folders = await call("list_folders", {"account": "account1"})
+                    self.assertEqual(folders["total_messages"], 1)
+                    attachment_match = await call("search_email", {"query": "has:attachment Zephyrlattice", "semantic": False})
+                    self.assertEqual(attachment_match["results"][0]["reference"], reference)
+                    self.assertEqual(attachment_match["results"][0]["match_source"], "attachment")
+                    attachment = await call("get_attachment_text", {"reference": reference, "attachment_id": "1"})
+                    self.assertIn("Zephyrlattice release", attachment["text"])
                     draft = await call("draft_reply", {"reference": reference, "body": "A synthetic reply."})
                     self.assertIn("draft_id", draft)
                     # No network send tool is called. Inspecting a persistent draft

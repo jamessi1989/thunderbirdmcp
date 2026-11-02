@@ -80,7 +80,7 @@ def _mail_footprint(profile: Path) -> int:
 
 @dataclass
 class Folder:
-    name: str  # human-readable, e.g. "mail.bsc.es/INBOX" or "Local Folders/Sent"
+    name: str  # human-readable, e.g. "mail.example.org/INBOX" or "Local Folders/Sent"
     path: Path  # absolute path to the mbox file
     size: int
     mtime: float

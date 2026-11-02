@@ -94,60 +94,229 @@ def _tls(value, port: int, name: str) -> str:
     return value
 
 
-def account_config() -> dict:
-    """Public connection settings from Thunderbird, overridden by TB_* vars."""
+def _account_ids(prefs: dict) -> list[str]:
+    ids = str(prefs.get("mail.accountmanager.accounts", "")).split(",")
+    ids += [key[len("mail.account."):-len(".server")] for key in prefs
+            if key.startswith("mail.account.") and key.endswith(".server")]
+    return list(dict.fromkeys(item.strip() for item in ids if item.strip()))
+
+
+def _default_account(prefs: dict) -> str:
+    return os.environ.get("TB_ACCOUNT") or prefs.get("mail.accountmanager.defaultaccount") or "environment"
+
+
+def _account_id(account: str | None, prefs: dict) -> str:
+    selected = account if account is not None else _default_account(prefs)
+    if not isinstance(selected, str) or not selected.strip():
+        raise ValueError("Account must be a Thunderbird account id or unique sender email")
+    selected = selected.strip()
+    ids = _account_ids(prefs)
+    if selected in ids or (selected == "environment" and not ids):
+        return selected
+    matches = []
+    for candidate in ids:
+        identity = str(prefs.get(f"mail.account.{candidate}.identities", "")).split(",")[0].strip()
+        if str(prefs.get(f"mail.identity.{identity}.useremail", "")).casefold() == selected.casefold():
+            matches.append(candidate)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError("Sender email matches multiple accounts; select the Thunderbird account id")
+    raise ValueError("Unknown Thunderbird account; use list_accounts to find its account id")
+
+
+def _environment_prefix(account: str) -> str:
+    # Thunderbird account ids are normally account1, account2, etc. Reject
+    # unusual identifiers rather than merging distinct ids into one env name.
+    if not re.fullmatch(r"[A-Za-z0-9_]+", account):
+        raise ValueError("Unsupported Thunderbird account id")
+    return f"TB_ACCOUNT_{account.upper()}_"
+
+
+def account_config(account: str | None = None) -> dict:
+    """Return public settings for one account, never passwords or OAuth tokens.
+
+    TB_* overrides apply only to the selected default account. An explicit
+    secondary account uses its Thunderbird settings and TB_ACCOUNT_<ID>_* vars.
+    """
     prefs = _prefs()
-    account = os.environ.get("TB_ACCOUNT", prefs.get("mail.accountmanager.defaultaccount", ""))
+    account = _account_id(account, prefs)
+    environment_prefix = _environment_prefix(account)
+    use_global = account == _default_account(prefs)
+    def setting(name: str, fallback=None):
+        if environment_prefix + name in os.environ:
+            return os.environ[environment_prefix + name]
+        return os.environ.get("TB_" + name, fallback) if use_global else fallback
     server = prefs.get(f"mail.account.{account}.server", "")
-    identity = prefs.get(f"mail.account.{account}.identities", "").split(",")[0]
+    server_type = prefs.get(f"mail.server.{server}.type", "imap")
+    if server_type != "imap":
+        raise ValueError("Selected account is not an IMAP account")
+    identities = [item.strip() for item in prefs.get(f"mail.account.{account}.identities", "").split(",")]
+    identity = identities[0]
     imap_prefix = f"mail.server.{server}."
     identity_prefix = f"mail.identity.{identity}."
     smtp = prefs.get(identity_prefix + "smtpServer") or prefs.get("mail.smtp.defaultserver", "")
     smtp_prefix = f"mail.smtpserver.{smtp}."
-    host = os.environ.get("TB_IMAP_HOST", prefs.get(imap_prefix + "hostname", ""))
-    user = os.environ.get("TB_IMAP_USER", prefs.get(imap_prefix + "userName", ""))
-    port = int(os.environ.get("TB_IMAP_PORT", prefs.get(imap_prefix + "port", 993)))
-    smtp_host = os.environ.get("TB_SMTP_HOST", prefs.get(smtp_prefix + "hostname", host))
-    smtp_user = os.environ.get("TB_SMTP_USER", prefs.get(smtp_prefix + "username", user))
-    smtp_port = int(os.environ.get("TB_SMTP_PORT", prefs.get(smtp_prefix + "port", 465)))
-    sender = os.environ.get("TB_FROM", formataddr((prefs.get(identity_prefix + "fullName", ""),
-                                                  prefs.get(identity_prefix + "useremail", ""))))
+    host = setting("IMAP_HOST", prefs.get(imap_prefix + "hostname", ""))
+    user = setting("IMAP_USER", prefs.get(imap_prefix + "userName", ""))
+    port = int(setting("IMAP_PORT", prefs.get(imap_prefix + "port", 993)))
+    smtp_host = setting("SMTP_HOST", prefs.get(smtp_prefix + "hostname", host))
+    smtp_user = setting("SMTP_USER", prefs.get(smtp_prefix + "username", user))
+    smtp_port = int(setting("SMTP_PORT", prefs.get(smtp_prefix + "port", 465)))
+    sender = setting("FROM", formataddr((prefs.get(identity_prefix + "fullName", ""),
+                                       prefs.get(identity_prefix + "useremail", ""))))
     displayed, mailboxes = _addresses([sender], "From") if sender else ([], [])
+    aliases = []
+    for item in identities:
+        alias = prefs.get(f"mail.identity.{item}.useremail")
+        if alias:
+            try:
+                aliases.extend(_addresses([alias], "Identity")[1])
+            except ValueError:
+                # An unused malformed identity must not break another working one.
+                continue
     sent_url = urlparse(prefs.get(identity_prefix + "fcc_folder", ""))
-    sent_folder = os.environ.get("TB_SENT_FOLDER", unquote(sent_url.path.lstrip("/")) or "Sent")
+    sent_folder = setting("SENT_FOLDER", unquote(sent_url.path.lstrip("/")) or "Sent")
     for value, name in ((host, "IMAP host"), (smtp_host, "SMTP host"), (user, "IMAP user"),
                         (smtp_user, "SMTP user"), (sent_folder, "Sent folder")):
         _header(value, name)
     if not 1 <= port <= 65535 or not 1 <= smtp_port <= 65535:
         raise ValueError("Mail ports must be between 1 and 65535")
-    timeout = float(os.environ.get("TB_NETWORK_TIMEOUT", "15"))
+    timeout = float(setting("NETWORK_TIMEOUT", "15"))
     if not 0 < timeout <= 60:
         raise ValueError("TB_NETWORK_TIMEOUT must be greater than 0 and at most 60 seconds")
+    directory = prefs.get(imap_prefix + "directory-rel") or prefs.get(imap_prefix + "directory", "")
+    local_dir = unquote(str(directory).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]) if directory else host
+    account_prefix = setting("IMAP_ACCOUNT_DIR", local_dir).rstrip("/") + "/"
+    auth = {}
+    for protocol, prefix, auth_key in (("imap", imap_prefix, "authMethod"), ("smtp", smtp_prefix, "authMethod")):
+        method = str(setting(f"{protocol.upper()}_AUTH", "oauth2" if str(prefs.get(prefix + auth_key, "")) == "10" else "password")).lower()
+        if method not in ("password", "oauth2"):
+            raise ValueError(f"{protocol.upper()} authentication must be password or oauth2")
+        auth[f"{protocol}_auth"] = method
     return {
+        "account_id": account, "name": prefs.get(imap_prefix + "name", account),
         "from": displayed[0] if displayed else "", "from_email": mailboxes[0] if mailboxes else "",
+        "aliases": list(dict.fromkeys(aliases)),
         "imap_host": host, "imap_user": user, "imap_port": port,
-        "imap_tls": _tls(os.environ.get("TB_IMAP_TLS", prefs.get(imap_prefix + "socketType")), port, "TB_IMAP_TLS"),
+        "imap_tls": _tls(setting("IMAP_TLS", prefs.get(imap_prefix + "socketType")), port, "TB_IMAP_TLS"),
         "smtp_host": smtp_host, "smtp_user": smtp_user, "smtp_port": smtp_port,
-        "smtp_tls": _tls(os.environ.get("TB_SMTP_TLS", prefs.get(smtp_prefix + "try_ssl")), smtp_port, "TB_SMTP_TLS"),
+        "smtp_tls": _tls(setting("SMTP_TLS", prefs.get(smtp_prefix + "try_ssl")), smtp_port, "TB_SMTP_TLS"),
         "sent_folder": sent_folder, "timeout": timeout,
-        "account_prefix": os.environ.get("TB_IMAP_ACCOUNT_DIR", host) + "/",
-        "imap_keyring_service": os.environ.get("TB_IMAP_KEYRING_SERVICE", "thunderbird-mcp"),
-        "smtp_keyring_service": os.environ.get("TB_SMTP_KEYRING_SERVICE", "thunderbird-mcp"),
+        "account_prefix": account_prefix, "account_prefixes": [account_prefix],
+        "environment_prefix": environment_prefix, "use_global_environment": use_global,
+        "imap_keyring_service": setting("IMAP_KEYRING_SERVICE", "thunderbird-mcp"),
+        "smtp_keyring_service": setting("SMTP_KEYRING_SERVICE", "thunderbird-mcp"),
+        **auth,
     }
+
+
+def list_accounts() -> dict:
+    """List configured IMAP account ids and public settings without connecting."""
+    prefs = _prefs()
+    accounts = []
+    for account in _account_ids(prefs) or ["environment"]:
+        server = prefs.get(f"mail.account.{account}.server", "")
+        if prefs.get(f"mail.server.{server}.type", "imap") != "imap":
+            continue
+        try:
+            config = account_config(account)
+            accounts.append({**config, "default": account == _default_account(prefs)})
+        except ValueError as exc:
+            accounts.append({"account_id": account, "default": account == _default_account(prefs),
+                             "configured": False, "error": str(exc)})
+    return {"accounts": accounts, "default_account": _default_account(prefs)}
+
+
+def infer_account(folder: str) -> str | None:
+    """Find the unique account for a local index folder; never guess on overlap."""
+    matches = [account["account_id"] for account in list_accounts()["accounts"]
+               if any(folder.startswith(prefix) for prefix in account.get("account_prefixes", []))]
+    return matches[0] if len(matches) == 1 else None
+
+
+def credential_environment(config: dict, protocol: str, suffix: str) -> str | None:
+    """Read credentials only from env bindings that still identify this account."""
+    if protocol not in ("imap", "smtp"):
+        raise ValueError("Protocol must be imap or smtp")
+    key = f"{protocol.upper()}_{suffix}"
+    prefix = config.get("environment_prefix")
+    # Snapshotted drafts must not acquire the credentials of a newly selected
+    # default account or a changed account endpoint.
+    if "account_id" in config:
+        try:
+            current = account_config(config["account_id"])
+        except (ValueError, OSError):
+            return None
+        if any(current.get(f"{protocol}_{item}") != config.get(f"{protocol}_{item}") for item in ("host", "port", "user")):
+            return None
+        if prefix and prefix + key in os.environ:
+            return os.environ[prefix + key]
+        if not (current.get("use_global_environment") and config.get("use_global_environment")):
+            return None
+    return os.environ.get("TB_" + key)
+
+
+def credential_key(config: dict, protocol: str) -> str:
+    if protocol not in ("imap", "smtp"):
+        raise ValueError("Protocol must be imap or smtp")
+    binding = [config.get("account_id", "environment"), config[f"{protocol}_host"],
+               config.get(f"{protocol}_port"), config[f"{protocol}_user"], protocol]
+    return "account:" + hashlib.sha256(json.dumps(binding, separators=(",", ":")).encode()).hexdigest()
+
+
+def _legacy_password_allowed(config: dict, protocol: str) -> bool:
+    """Use an old service/username secret only when its mailbox is unambiguous."""
+    try:
+        current = account_config()
+        if config.get("account_id", current["account_id"]) != current["account_id"]:
+            return False
+        fields = (f"{protocol}_host", f"{protocol}_port", f"{protocol}_user")
+        endpoint = tuple(config.get(field) for field in fields)
+        if tuple(current.get(field) for field in fields) != endpoint:
+            return False
+        service, username = config[f"{protocol}_keyring_service"], config[f"{protocol}_user"]
+        for candidate in list_accounts()["accounts"]:
+            if candidate.get(f"{protocol}_keyring_service") == service and candidate.get(f"{protocol}_user") == username:
+                if tuple(candidate.get(field) for field in fields) != endpoint:
+                    return False
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def store_password(config: dict, protocol: str, secret: str) -> dict:
+    """Store a password under an account/server/protocol-bound keyring key.
+
+    Call only from a terminal password prompt or private stdin/file import.
+    """
+    key = credential_key(config, protocol)
+    _require_config(config, protocol)
+    if not isinstance(secret, str) or not secret or len(secret) > 65536 or any(char in secret for char in "\r\n\x00"):
+        raise ValueError("Password must be nonempty text without CR, LF, or NUL characters")
+    try:
+        keyring.set_password(config[f"{protocol}_keyring_service"], key, secret)
+    except Exception as exc:
+        raise RuntimeError(f"Cannot store {protocol.upper()} password in keyring ({type(exc).__name__})") from None
+    return {"stored": True, "account_id": config.get("account_id", "environment"),
+            "protocol": protocol, "auth": config.get(f"{protocol}_auth", "password"),
+            "credential_available": True}
 
 
 def password(config: dict, protocol: str) -> str:
     """Get a secret without including its value in errors or public results."""
-    value = os.environ.get(f"TB_{protocol.upper()}_PASSWORD")
+    value = credential_environment(config, protocol, "PASSWORD")
     if not value and protocol == "smtp" and config["smtp_user"] == config["imap_user"] and config["smtp_host"] == config["imap_host"]:
-        value = os.environ.get("TB_IMAP_PASSWORD")
+        value = credential_environment(config, "imap", "PASSWORD")
     if not value:
         try:
-            value = keyring.get_password(config[f"{protocol}_keyring_service"], config[f"{protocol}_user"])
+            value = keyring.get_password(config[f"{protocol}_keyring_service"], credential_key(config, protocol))
+            if not value and _legacy_password_allowed(config, protocol):
+                value = keyring.get_password(config[f"{protocol}_keyring_service"], config[f"{protocol}_user"])
         except Exception as exc:
             raise RuntimeError(f"Cannot access {protocol.upper()} keyring ({type(exc).__name__})") from None
     if not value:
-        raise RuntimeError(f"No {protocol.upper()} password configured; use the system keyring or TB_{protocol.upper()}_PASSWORD")
+        raise RuntimeError(f"No {protocol.upper()} password configured for this account; use its scoped environment variable or system keyring")
     return value
 
 
@@ -159,7 +328,12 @@ def _require_config(config: dict, protocol: str) -> None:
 @contextmanager
 def smtp_session(config: dict):
     _require_config(config, "smtp")
-    secret = password(config, "smtp")
+    oauth2 = config.get("smtp_auth", "password") == "oauth2"
+    if oauth2:
+        from . import oauth
+        secret = oauth.access_token(config, "smtp")
+    else:
+        secret = password(config, "smtp")
     context = ssl.create_default_context()
     smtp = None
     try:
@@ -170,7 +344,15 @@ def smtp_session(config: dict):
             smtp.ehlo()
             smtp.starttls(context=context)
             smtp.ehlo()
-        smtp.login(config["smtp_user"], secret)
+        try:
+            if oauth2:
+                smtp.ehlo_or_helo_if_needed()
+                payload = oauth.xoauth2(config["smtp_user"], secret)
+                smtp.auth("XOAUTH2", lambda challenge=None: payload if challenge is None else "")
+            else:
+                smtp.login(config["smtp_user"], secret)
+        except smtplib.SMTPAuthenticationError as exc:
+            raise smtplib.SMTPAuthenticationError(exc.smtp_code, b"Authentication failed") from None
         yield smtp
     finally:
         if smtp is not None:
@@ -193,16 +375,20 @@ def _error(exc: Exception) -> dict:
     return result
 
 
-def health_check(check_network: bool = False) -> dict:
+def health_check(check_network: bool = False, account: str | None = None) -> dict:
     """Read-only credential, TLS, login, and Sent-folder availability checks."""
-    config = account_config()
+    config = account_config(account)
     result = {"config": config, "network_checked": check_network}
     for protocol in ("imap", "smtp"):
         entry = {"configured": bool(config[f"{protocol}_host"] and config[f"{protocol}_user"])}
         try:
             _require_config(config, protocol)
-            password(config, protocol)
-            entry["credential_available"] = True
+            if config.get(f"{protocol}_auth") == "oauth2":
+                from . import oauth
+                entry.update(oauth.token_status(config, protocol))
+            else:
+                password(config, protocol)
+                entry["credential_available"] = True
         except Exception as exc:
             entry.update(credential_available=False, error=_error(exc))
         result[protocol] = entry
@@ -271,9 +457,9 @@ def _public(row, *, include_body: bool = True) -> dict:
 def prepare_draft(to: list[str], subject: str, body: str, cc: list[str] | None = None,
                   bcc: list[str] | None = None, attachments: list[str] | None = None,
                   in_reply_to: str | None = None, references: list[str] | None = None,
-                  idempotency_key: str | None = None) -> dict:
+                  idempotency_key: str | None = None, account: str | None = None) -> dict:
     """Validate and persist the exact MIME bytes and envelope to be sent later."""
-    config = account_config()
+    config = account_config(account)
     if not config["from_email"]:
         raise ValueError("No sender configured; set TB_FROM or select a Thunderbird identity")
     to_display, to_envelope = _addresses(to, "To")
@@ -334,7 +520,7 @@ def prepare_draft(to: list[str], subject: str, body: str, cc: list[str] | None =
         msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
         attachment_info.append({"filename": filename, "content_type": content_type, "size": len(data),
                                 "sha256": hashlib.sha256(data).hexdigest()})
-    preview = {"from": config["from"], "to": to_display, "cc": cc_display, "bcc": bcc_display,
+    preview = {"account_id": config.get("account_id"), "from": config["from"], "to": to_display, "cc": cc_display, "bcc": bcc_display,
                "subject": subject, "body": body, "message_id": str(msg["Message-ID"]),
                "in_reply_to": in_reply_to, "references": refs, "attachments": attachment_info}
     fingerprint_data = {key: value for key, value in preview.items() if key != "message_id"}
@@ -366,10 +552,15 @@ def get_draft(draft_id: str) -> dict:
         return _public(row)
 
 
-def list_drafts(limit: int = 20) -> dict:
+def list_drafts(limit: int = 20, account: str | None = None) -> dict:
+    selected = account_config(account)["account_id"] if account is not None else None
     with _db() as conn:
-        rows = conn.execute("SELECT * FROM drafts ORDER BY created_at DESC, rowid DESC LIMIT ?",
-                            (max(1, min(limit, 100)),)).fetchall()
+        if selected is None:
+            rows = conn.execute("SELECT * FROM drafts ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                                (max(1, min(limit, 100)),)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM drafts WHERE json_extract(config, '$.account_id') = ? "
+                                "ORDER BY created_at DESC, rowid DESC LIMIT ?", (selected, max(1, min(limit, 100)))).fetchall()
         return {"drafts": [_public(row, include_body=False) for row in rows], "count": len(rows)}
 
 
@@ -441,9 +632,10 @@ def send_draft(draft_id: str, retry_failed: bool = False) -> dict:
 
 def send_email(to: list[str], subject: str, body: str, cc: list[str] | None = None,
                dry_run: bool = True, bcc: list[str] | None = None,
-               attachments: list[str] | None = None, idempotency_key: str | None = None) -> dict:
+               attachments: list[str] | None = None, idempotency_key: str | None = None,
+               account: str | None = None) -> dict:
     draft = prepare_draft(to, subject, body, cc=cc, bcc=bcc, attachments=attachments,
-                          idempotency_key=idempotency_key)
+                          idempotency_key=idempotency_key, account=account)
     if dry_run:
         return {"dry_run": True, **draft}
     return send_draft(draft["draft_id"])

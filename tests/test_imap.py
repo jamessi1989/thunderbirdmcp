@@ -20,6 +20,17 @@ class IMAPTests(unittest.TestCase):
             b'(\\HasNoChildren) "/" "A \\"quoted\\" folder"', b'(\\HasNoChildren) "/" INBOX'])
         self.assertEqual(imap.list_folders(connection), ['A "quoted" folder', "INBOX"])
 
+    def test_unicode_mailbox_names_round_trip_modified_utf7(self):
+        for name in ("INBOX", "Research & Reports", "Enviados/日本語", "Données/📨"):
+            with self.subTest(name=name):
+                wire = imap.encode_folder(name)
+                wire.encode("ascii")
+                self.assertEqual(imap.decode_folder(wire), name)
+        self.assertEqual(imap.encode_folder("~peter/mail/台北/日本語"), "~peter/mail/&U,BTFw-/&ZeVnLIqe-")
+        connection = MagicMock()
+        connection.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "&ZeVnLIqe-"'])
+        self.assertEqual(imap.list_folders(connection), ["日本語"])
+
     def test_session_verifies_tls_and_read_operations_do_not_require_move(self):
         config = {"imap_host": "imap.example.test", "imap_port": 993, "imap_user": "test", "imap_tls": "ssl", "timeout": 15}
         with patch.object(imap.imaplib, "IMAP4_SSL") as constructor, patch.object(imap, "password", return_value="synthetic"):

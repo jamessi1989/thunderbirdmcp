@@ -17,6 +17,59 @@ class SearchTests(MailFixture):
     def find(self, query, **kwargs):
         return search.search(query, use=("fts",), db_path=self.db, **kwargs)
 
+    def test_attachment_content_filename_and_presence_filters(self):
+        message = mail("attachment", body="ordinarybody")
+        message.add_attachment(b"quasarbudget costs 42", maintype="text", subtype="plain", filename="lunar-budget.txt")
+        message.add_attachment(b"synthetic image", maintype="image", subtype="png", filename="diagram.png")
+        self.folder("INBOX", [message, mail("plain", body="plainbody")])
+        self.refresh()
+        found = self.find("quasarbudget")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["match_source"], "attachment")
+        self.assertIn("quasarbudget", found[0]["snippet"])
+        self.assertEqual(found[0]["attachment_count"], 2)
+        self.assertEqual(found[0]["attachments"][1]["status"], "unsupported")
+        self.assertEqual(len(self.find("ordinarybody quasarbudget")), 1)
+        self.assertEqual(self.find("ordinarybody quasarbudget")[0]["match_source"], "message_and_attachment")
+        self.assertEqual(len(self.find("lunar-budget")), 1)
+        self.assertEqual(len(self.find("has:attachment attachment:budget.txt")), 1)
+        self.assertEqual(len(self.find("", has_attachment=False)), 1)
+        self.assertEqual(len(self.find("", has_attachment=True, attachment=".png")), 1)
+        self.assertEqual(self.find("", attachment="%"), [])
+        for query in ("has:unknown", "attachment:", 'attachment:"unfinished'):
+            with self.subTest(query=query), self.assertRaises(ValueError):
+                self.find(query)
+        with self.assertRaises(ValueError):
+            self.find("has:attachment", has_attachment=False)
+
+    def test_account_prefix_is_exact_and_wildcards_are_literal(self):
+        self.folder("INBOX", [mail("one", body="scopequasar")])
+        self.refresh()
+        conn = index.connect(self.db)
+        try:
+            conn.execute("INSERT INTO emails(folder,subject,body,stable_key,message_id,date_ts) VALUES (?,?,?,?,?,?)",
+                         ("example.test.extra/INBOX", "Other account", "scopequasar", "mid:<other@test>", "<other@test>", 0))
+            conn.commit()
+        finally:
+            conn.close()
+        for query in ("", "scopequasar"):
+            with self.subTest(query=query):
+                self.assertEqual(len(self.find(query, account_prefix="example.test")), 1)
+                self.assertEqual(self.find(query, account_prefix="example%"), [])
+        with self.assertRaises(ValueError):
+            self.find("", account_prefix="")
+
+    def test_attachment_updates_invalidate_embeddings_and_change_document_hash(self):
+        conn = index.connect(self.db)
+        search._embedding_schema(conn, "embeddings")
+        key = self.rows()[0]["stable_key"]
+        conn.execute("INSERT INTO embeddings(key,vec) VALUES (?,?)", (key, np.ones(2, dtype=np.float32).tobytes()))
+        conn.commit()
+        conn.execute("UPDATE emails SET attachment_text='new attachment' WHERE stable_key=?", (key,))
+        self.assertEqual(conn.execute("SELECT count(*) FROM embeddings").fetchone()[0], 0)
+        conn.close()
+        self.assertNotEqual(search._doc("subject", "sender", "body"), search._doc("subject", "sender", "body", "new attachment"))
+
     def test_date_and_recipient_filters(self):
         self.assertEqual(len(self.find("", since="2026-11-02", until="2026-11-02")), 1)
         self.assertEqual(len(self.find("", recipient="reader@")), 1)

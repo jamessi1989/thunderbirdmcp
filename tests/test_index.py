@@ -1,6 +1,7 @@
 """Synthetic mail stores exercise index stability without reading personal mail."""
 
 import mailbox
+import json
 import os
 import sqlite3
 import tempfile
@@ -65,6 +66,99 @@ class MailFixture(unittest.TestCase):
 
 
 class IndexTests(MailFixture):
+    def test_attachment_text_stays_separate_and_refresh_removes_old_terms(self):
+        message = mail(None, body="Ordinary body")
+        message.add_attachment(b"attachmentonlyquasar", maintype="text", subtype="plain", filename="budget.txt")
+        self.folder("INBOX", [message])
+        self.refresh()
+        before = self.rows()[0]
+        self.assertEqual(before["body"].strip(), "Ordinary body")
+        self.assertIn("attachmentonlyquasar", before["attachment_text"])
+        self.assertEqual(json.loads(before["attachments_json"])[0]["status"], "extracted")
+        self.assertEqual(before["attachment_count"], 1)
+        self.assertEqual(before["attachments_indexed"], 1)
+        plain = mail(None, body="Ordinary body")
+        self.folder("INBOX", [plain])
+        self.refresh()
+        after = self.rows()[0]
+        self.assertEqual(after["stable_key"], before["stable_key"])
+        self.assertEqual(after["id"], before["id"])
+        self.assertEqual(after["attachment_text"], "")
+        conn = index.connect(self.db)
+        try:
+            self.assertEqual(conn.execute("SELECT count(*) FROM emails_fts WHERE emails_fts MATCH 'attachmentonlyquasar'").fetchone()[0], 0)
+            conn.execute("INSERT INTO emails_fts(emails_fts,rank) VALUES('integrity-check',1)")
+        finally:
+            conn.close()
+
+    def test_identity_parse_can_skip_attachment_extraction(self):
+        message = mail()
+        message.add_attachment(b"synthetic", maintype="text", subtype="plain", filename="note.txt")
+        with patch.object(index, "summarise_message", side_effect=AssertionError("must not extract")):
+            parsed = index.parse_message(message, extract_attachments=False)
+        self.assertEqual(parsed.attachments_indexed, 0)
+        self.assertEqual(parsed.attachment_count, 1)
+
+    def test_v2_fts_migration_preserves_content_ids_and_refreshes_attachments(self):
+        self.folder("INBOX", [mail("one", body="existingquasar")])
+        self.refresh()
+        original = self.rows()[0]
+        conn = sqlite3.connect(self.db)
+        conn.executescript("""
+            DROP TRIGGER emails_ai; DROP TRIGGER emails_ad; DROP TRIGGER emails_au;
+            DROP TABLE emails_vocab; DROP TABLE emails_fts;
+            CREATE VIRTUAL TABLE emails_fts USING fts5(subject,sender,recipients,body,content='emails',content_rowid='id');
+            INSERT INTO emails_fts(emails_fts) VALUES('rebuild');
+            CREATE VIRTUAL TABLE emails_vocab USING fts5vocab(emails_fts,'row');
+            UPDATE folders SET schema_version=2;
+            PRAGMA user_version=2;
+        """)
+        conn.close()
+        conn = index.connect(self.db)
+        try:
+            row = dict(conn.execute("SELECT * FROM emails").fetchone())
+            self.assertEqual(row, original)
+            self.assertEqual(conn.execute("SELECT count(*) FROM emails_fts WHERE emails_fts MATCH 'existingquasar'").fetchone()[0], 1)
+            self.assertIn("attachment_text", {r[1] for r in conn.execute("PRAGMA table_info(emails_fts)")})
+            conn.execute("INSERT INTO emails_fts(emails_fts,rank) VALUES('integrity-check',1)")
+        finally:
+            conn.close()
+        self.assertEqual(self.refresh().folders_indexed, 1)
+        self.assertEqual(self.rows()[0]["id"], original["id"])
+
+    def test_failed_fts_migration_rolls_back_search_index(self):
+        self.folder("INBOX", [mail(body="retainedquasar")])
+        self.refresh()
+        conn = sqlite3.connect(self.db)
+        conn.executescript("""
+            DROP TRIGGER emails_ai; DROP TRIGGER emails_ad; DROP TRIGGER emails_au;
+            DROP TABLE emails_vocab; DROP TABLE emails_fts;
+            CREATE VIRTUAL TABLE emails_fts USING fts5(subject,sender,recipients,body,content='emails',content_rowid='id');
+            INSERT INTO emails_fts(emails_fts) VALUES('rebuild');
+            CREATE VIRTUAL TABLE emails_vocab USING fts5vocab(emails_fts,'row');
+            PRAGMA user_version=2;
+        """)
+        conn.close()
+
+        class FailingConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):
+                if sql.startswith("CREATE TRIGGER emails_ai"):
+                    raise sqlite3.OperationalError("Synthetic interrupted migration")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(self.db, factory=FailingConnection)
+        conn.row_factory = sqlite3.Row
+        with self.assertRaises(sqlite3.OperationalError):
+            index._migrate(conn)
+        conn.close()
+        conn = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT count(*) FROM emails_fts WHERE emails_fts MATCH 'retainedquasar'").fetchone()[0], 1)
+            self.assertNotIn("attachment_text", {r[1] for r in conn.execute("PRAGMA table_info(emails_fts)")})
+        finally:
+            conn.close()
+
     def test_incremental_and_full_refresh_keep_ids_and_references(self):
         self.folder("INBOX", [mail("one"), mail(None, body="No Message-ID")])
         self.refresh()

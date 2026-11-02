@@ -88,12 +88,17 @@ def _select_argument(id, reference):
 
 def get_email(id: int | str | None = None, reference: str | None = None, *,
               db_path: Path | None = None, max_body_chars: int = index.MAX_BODY_CHARS) -> dict:
-    """Read indexed mail by persistent reference or stable local integer ID."""
-    if not 0 <= max_body_chars <= index.MAX_BODY_CHARS:
+    """Read indexed mail or route an account-bound live IMAP reference."""
+    from . import live
+    value = _select_argument(id, reference)
+    if live.is_reference(value):
+        return live.get_email(value, max_body_chars=max_body_chars)
+    if (isinstance(max_body_chars, bool) or not isinstance(max_body_chars, int)
+            or not 0 <= max_body_chars <= index.MAX_BODY_CHARS):
         raise ValueError(f"max_body_chars must be between 0 and {index.MAX_BODY_CHARS}")
     conn = index.connect(db_path, read_only=True)
     try:
-        row = _resolve(conn, _select_argument(id, reference))
+        row = _resolve(conn, value)
         result = _summary(row)
         body = row["body"] or ""
         result.update(body=body[:max_body_chars],
@@ -113,6 +118,9 @@ def get_email(id: int | str | None = None, reference: str | None = None, *,
                               references=index.message_ids(index._header(msg, "references")), headers_complete=True)
         else:
             result["headers_complete"] = True
+        if "attachments_json" in row.keys():
+            result["attachments"] = json.loads(row["attachments_json"] or "[]")
+            result["attachments_indexed"] = bool(row["attachments_indexed"])
         return result
     finally:
         conn.close()
@@ -121,9 +129,13 @@ def get_email(id: int | str | None = None, reference: str | None = None, *,
 def reference_email(id: int | str | None = None, reference: str | None = None, *,
                     db_path: Path | None = None) -> dict:
     """Return a durable citation that can be pasted into another terminal session."""
+    from . import live
+    value = _select_argument(id, reference)
+    if live.is_reference(value):
+        return live.reference_email(value)
     conn = index.connect(db_path, read_only=True)
     try:
-        row = _resolve(conn, _select_argument(id, reference))
+        row = _resolve(conn, value)
         result = _summary(row)
         label = f"{result['subject']} — {result['from']} ({result['date'][:10] or 'undated'})"
         label = re.sub(r"[\r\n]+", " ", label).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
@@ -136,6 +148,9 @@ def reference_email(id: int | str | None = None, reference: str | None = None, *
 def get_thread(reference: str | int, *, limit: int = 50, include_bodies: bool = False,
                db_path: Path | None = None) -> dict:
     """Follow Message-ID, References, and In-Reply-To links, including shared missing ancestors."""
+    from . import live
+    if live.is_reference(reference):
+        return live.get_thread(reference, limit=limit, include_bodies=include_bodies)
     if not 1 <= limit <= 200:
         raise ValueError("limit must be between 1 and 200")
     conn = index.connect(db_path, read_only=True)
@@ -182,7 +197,7 @@ def _matches(raw: bytes, key: str) -> bool:
             return False
     except ValueError:
         pass
-    return index.parse_message(msg).stable_key == key
+    return index.parse_message(msg, extract_attachments=False).stable_key == key
 
 
 def _source_bytes(conn, row) -> bytes:
@@ -237,12 +252,78 @@ def _attachments(msg):
                "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}, payload
 
 
+def _attachment_id(value: int | str) -> int:
+    if (isinstance(value, bool) or not isinstance(value, (int, str))
+            or (isinstance(value, str) and not re.fullmatch(r"[1-9][0-9]*", value))
+            or int(value) < 1):
+        raise ValueError("attachment_id must be the positive numeric ID from list_attachments")
+    return int(value)
+
+
+def _attachment_text(msg, attachment_id: int, max_chars: int) -> dict:
+    from . import attachments
+    number = 0
+    for part in msg.walk():
+        if part.is_multipart() or not (part.get_content_disposition() == "attachment" or part.get_filename()):
+            continue
+        number += 1
+        if number != attachment_id:
+            continue
+        filename = (part.get_filename() or f"attachment-{number}").replace("\\", "/").rsplit("/", 1)[-1]
+        meta = {"id": number, "filename": filename, "content_type": part.get_content_type(), "size": None}
+        raw = part.get_payload()
+        if not isinstance(raw, str) or len(raw) > attachments.MAX_ATTACHMENT_BYTES * 2:
+            return {"attachment": meta, "text": "", "status": "too_large", "truncated": False,
+                    "reason": "attachment_byte_limit"}
+        payload = part.get_payload(decode=True) or b""
+        meta.update(size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+        extracted = attachments.extract_text(payload, filename, part.get_content_type(),
+                                              charset=part.get_content_charset())
+        if len(extracted["text"]) > max_chars:
+            extracted.update(text=extracted["text"][:max_chars], truncated=True, reason="requested_text_limit")
+        return {"attachment": meta, **extracted}
+    raise LookupError("No attachment with that ID; use list_attachments first")
+
+
+def get_attachment_text(reference: str | int, attachment_id: int | str, max_chars: int = 25_000, *,
+                        db_path: Path | None = None) -> dict:
+    """Extract bounded text from one attachment without opening files or writing an index."""
+    from . import attachments, live
+    attachment_id = _attachment_id(attachment_id)
+    if (isinstance(max_chars, bool) or not isinstance(max_chars, int)
+            or not 0 <= max_chars <= attachments.MAX_ATTACHMENT_CHARS):
+        raise ValueError(f"max_chars must be between 0 and {attachments.MAX_ATTACHMENT_CHARS}")
+    if live.is_reference(reference):
+        return live.get_attachment_text(reference, attachment_id, max_chars=max_chars)
+    conn = index.connect(db_path, read_only=True)
+    try:
+        row = _resolve(conn, reference)
+        msg = email.message_from_bytes(_source_bytes(conn, row), policy=email.policy.default)
+        return {"reference": reference_for(key_for_row(row)), **_attachment_text(msg, attachment_id, max_chars)}
+    finally:
+        conn.close()
+
+
 def list_attachments(reference: str | int, *, db_path: Path | None = None) -> dict:
+    from . import live
+    if live.is_reference(reference):
+        return live.list_attachments(reference)
     conn = index.connect(db_path, read_only=True)
     try:
         row = _resolve(conn, reference)
         msg = email.message_from_bytes(_source_bytes(conn, row), policy=email.policy.default)
         attachments = [meta for meta, _ in _attachments(msg)]
+        if "attachments_json" in row.keys() and row["attachments_indexed"]:
+            stored = {entry["id"]: entry for entry in json.loads(row["attachments_json"] or "[]")
+                      if entry.get("id")}
+            for attachment in attachments:
+                extracted = stored.get(attachment["id"], {})
+                if any(extracted.get(field) != attachment[field]
+                       for field in ("sha256", "filename", "content_type")):
+                    continue
+                for field in ("status", "truncated", "reason"):
+                    if field in extracted:
+                        attachment[field] = extracted[field]
         return {"reference": reference_for(key_for_row(row)), "count": len(attachments), "attachments": attachments}
     finally:
         conn.close()
@@ -253,9 +334,28 @@ def _write_export(conn, destination: str | Path, data: bytes, db_path) -> dict:
     db = Path(db_path or index.default_db_path()).expanduser().resolve()
     if path == db or str(path) in {str(db) + "-wal", str(db) + "-shm"}:
         raise ValueError("Export destination must not be the mail index")
-    for row in conn.execute("SELECT path FROM folders WHERE path IS NOT NULL"):
+    stores = []
+    for row in conn.execute("SELECT path FROM folders WHERE path IS NOT NULL") if conn is not None else ():
         source = Path(row[0]).resolve()
-        store = next((p for p in source.parents if p.name in {"Mail", "ImapMail"}), source.parent)
+        stores.append(next((p for p in source.parents if p.name in {"Mail", "ImapMail"}), source.parent))
+    # Live reads work before an index exists. Still protect the configured
+    # Thunderbird store when a caller explicitly chooses an export destination.
+    try:
+        profile = index.find_profile().resolve()
+        stores.extend(((profile / "Mail").resolve(), (profile / "ImapMail").resolve()))
+        # Thunderbird permits accounts whose storage lives outside the profile.
+        # A live export must protect those too, even before local indexing.
+        from .outgoing import _prefs
+        for key, value in _prefs().items():
+            if not key.startswith("mail.server.") or not isinstance(value, str):
+                continue
+            if key.endswith(".directory") and Path(value).expanduser().is_absolute():
+                stores.append(Path(value).expanduser().resolve())
+            elif key.endswith(".directory-rel") and value.startswith("[ProfD]"):
+                stores.append((profile / value[len("[ProfD]"):].lstrip("/\\")).resolve())
+    except FileNotFoundError:
+        pass
+    for store in stores:
         if path == store or store in path.parents:
             raise ValueError("Export destination must be outside Thunderbird mail storage")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -271,6 +371,9 @@ def _write_export(conn, destination: str | Path, data: bytes, db_path) -> dict:
 
 def export_email(reference: str | int, destination: str | Path, *, db_path: Path | None = None) -> dict:
     """Export the original MIME mail as .eml without modifying Thunderbird."""
+    from . import live
+    if live.is_reference(reference):
+        return live.export_email(reference, destination, db_path=db_path)
     conn = index.connect(db_path, read_only=True)
     try:
         row = _resolve(conn, reference)
@@ -282,10 +385,10 @@ def export_email(reference: str | int, destination: str | Path, *, db_path: Path
 
 def export_attachment(reference: str | int, attachment_id: int | str, destination: str | Path, *,
                       db_path: Path | None = None) -> dict:
-    try:
-        attachment_id = int(attachment_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("attachment_id must be the numeric ID from list_attachments") from exc
+    from . import live
+    if live.is_reference(reference):
+        return live.export_attachment(reference, attachment_id, destination, db_path=db_path)
+    attachment_id = _attachment_id(attachment_id)
     conn = index.connect(db_path, read_only=True)
     try:
         row = _resolve(conn, reference)

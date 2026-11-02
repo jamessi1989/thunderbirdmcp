@@ -1,6 +1,6 @@
 [project]
 name = "thunderbird-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Search, reference, read, and send Thunderbird mail from terminal MCP clients"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -11,6 +11,8 @@ dependencies = [
     "numpy>=2.2.6",
     "rapidfuzz>=3.14.5",
     "tomlkit>=0.13,<1",
+    "pypdf>=6,<7",
+    "defusedxml>=0.7.1,<1",
 ]
 
 [project.scripts]

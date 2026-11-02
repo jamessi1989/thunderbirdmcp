@@ -127,7 +127,7 @@ command = "keep"
         working.mkdir()
         run = subprocess.run([str(self.home / ".local/bin/tbmail"), "--body-file", "text with spaces.txt", "$(literal)`argument`"], cwd=working, capture_output=True, text=True, check=True)
         data = json.loads(run.stdout)
-        self.assertEqual(data["cwd"], str(working))
+        self.assertEqual(data["cwd"], str(working.resolve()))
         self.assertEqual(data["args"], ["--body-file", "text with spaces.txt", "$(literal)`argument`"])
 
     def test_project_overrides_are_reported_without_changes(self):

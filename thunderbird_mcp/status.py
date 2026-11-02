@@ -17,7 +17,7 @@ def _iso(timestamp: int | float | None) -> str | None:
     return dt.datetime.fromtimestamp(timestamp, dt.timezone.utc).isoformat()
 
 
-def mail_status(check_network: bool = False) -> dict:
+def mail_status(check_network: bool = False, account: str | None = None) -> dict:
     """Inspect local health; optionally authenticate to IMAP/SMTP without sending."""
     result: dict = {"ok": True, "transport": "stdio", "warnings": []}
     try:
@@ -51,7 +51,8 @@ def mail_status(check_network: bool = False) -> dict:
                 for folder in folders:
                     prior = indexed.get(folder.name)
                     if (prior is None or prior["size"] != folder.size
-                            or abs((prior["mtime"] or 0) - folder.mtime) >= 0.001):
+                            or abs((prior["mtime"] or 0) - folder.mtime) >= 0.001
+                            or prior["schema_version"] != index.SCHEMA_VERSION):
                         changed.append(folder.name)
                 missing = sorted(set(indexed) - {f.name for f in folders})
             result["index"].update({
@@ -64,6 +65,7 @@ def mail_status(check_network: bool = False) -> dict:
                 "changed_local_folders": changed,
                 "missing_local_folders": missing,
                 "refresh_needed": bool(changed or missing),
+                "schema_version": conn.execute("PRAGMA user_version").fetchone()[0],
             })
             if changed or missing:
                 result["warnings"].append("The index needs a refresh from Thunderbird's local mail.")
@@ -73,6 +75,21 @@ def mail_status(check_network: bool = False) -> dict:
             vectors = conn.execute("SELECT count(*) FROM embeddings").fetchone()[0] if exists else 0
             result["search"] = {"keyword": True, "stored_embeddings": vectors,
                                 "semantic_index_available": bool(vectors)}
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(emails)")}
+            if "attachments_indexed" in columns:
+                extracted = conn.execute(
+                    "SELECT sum(attachment_count) AS attachments, "
+                    "sum(CASE WHEN attachments_indexed=1 THEN 1 ELSE 0 END) AS messages_processed, "
+                    "sum(CASE WHEN length(attachment_text)>0 THEN 1 ELSE 0 END) AS messages_with_text, "
+                    "sum(CASE WHEN attachments_indexed=0 AND attachment_count>0 THEN 1 ELSE 0 END) AS pending "
+                    "FROM emails"
+                ).fetchone()
+                result["attachments"] = {key: extracted[key] or 0 for key in extracted.keys()}
+                result["attachments"]["extraction_statuses"] = {
+                    row["status"]: row["count"] for row in conn.execute(
+                        "SELECT json_extract(a.value,'$.status') AS status, count(*) AS count "
+                        "FROM emails e, json_each(e.attachments_json) a GROUP BY status")
+                }
         except (sqlite3.Error, OSError) as exc:
             result["ok"] = False
             result["index"]["error"] = str(exc)
@@ -85,12 +102,14 @@ def mail_status(check_network: bool = False) -> dict:
 
     from . import outgoing
     try:
-        result["account"] = outgoing.account_config()
-        result["connection"] = outgoing.health_check(check_network=check_network)
+        result["account"] = outgoing.account_config(account)
+        result["connection"] = outgoing.health_check(check_network=check_network, account=account)
         if not result["connection"].get("ready", False):
             result["ok"] = False
     except (RuntimeError, OSError, ValueError) as exc:
         result["account"] = {"error": str(exc)}
         result["ok"] = False
-    result["scope"] = "Search covers mail downloaded by Thunderbird. IMAP/SMTP use the configured account."
+    result["scope"] = ("Local search covers downloaded mail and extracted attachments. "
+                       "Live search reads the selected IMAP folder directly. "
+                       "IMAP/SMTP use the selected account; drafts retain their original account.")
     return result

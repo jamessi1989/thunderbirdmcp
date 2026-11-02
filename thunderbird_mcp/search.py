@@ -35,7 +35,7 @@ def _schema(table: str) -> str:
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
         raise ValueError("Invalid embedding table name")
     return f"CREATE TABLE IF NOT EXISTS {table} (key TEXT PRIMARY KEY, vec BLOB NOT NULL, doc_hash TEXT, model TEXT)"
-_FILTER = re.compile(r'(?<!\S)(from|to|folder|after|before):("[^"]*"|\S+)', re.I)
+_FILTER = re.compile(r'(?<!\S)(from|to|folder|after|before|has|attachment):("[^"]*"|\S+)', re.I)
 
 RERANK_MODEL = "jinaai/jina-reranker-v2-base-multilingual"
 RERANK_TOP = 20
@@ -96,8 +96,11 @@ def _key(message_id: str | None, sender: str, subject: str, date_ts: int) -> str
     return "h:" + hashlib.sha1(f"{sender}|{subject}|{date_ts}".encode()).hexdigest()
 
 
-def _doc(subject: str, sender: str, body: str) -> str:
-    return f"{subject or ''}\n{sender or ''}\n{clean_body(body or '')[:EMBED_CHARS]}"
+def _doc(subject: str, sender: str, body: str, attachment_text: str = "", attachment_names: str = "") -> str:
+    text = clean_body(body or "")
+    if attachment_text or attachment_names:
+        text = text[:400] + "\nAttachments: " + clean_body(attachment_names + " " + attachment_text)[:200]
+    return f"{subject or ''}\n{sender or ''}\n{text[:EMBED_CHARS]}"
 
 
 def _embedding_schema(conn, table):
@@ -110,8 +113,10 @@ def _embedding_schema(conn, table):
     for suffix, event in (("ai", "INSERT"), ("au", "UPDATE"), ("ad", "DELETE")):
         conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_revision_{suffix} AFTER {event} ON {table} BEGIN "
                      f"UPDATE index_meta SET value=value+1 WHERE key='{table}_revision'; END")
-    conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_invalidate AFTER UPDATE OF subject,sender,body ON emails "
-                 "WHEN old.subject IS NOT new.subject OR old.sender IS NOT new.sender OR old.body IS NOT new.body BEGIN "
+    conn.execute(f"DROP TRIGGER IF EXISTS {table}_invalidate")
+    conn.execute(f"CREATE TRIGGER {table}_invalidate AFTER UPDATE OF subject,sender,body,attachment_text,attachment_names ON emails "
+                 "WHEN old.subject IS NOT new.subject OR old.sender IS NOT new.sender OR old.body IS NOT new.body "
+                 "OR old.attachment_text IS NOT new.attachment_text OR old.attachment_names IS NOT new.attachment_names BEGIN "
                  f"DELETE FROM {table} WHERE key IN (old.stable_key,old.message_id); END")
     conn.commit()
 
@@ -126,7 +131,7 @@ def embed_missing(progress=print, table: str | None = None, *, db_path: Path | N
         todo: dict[str, tuple[str, str]] = {}
         for r in conn.execute("SELECT * FROM emails"):
             k = _messages.key_for_row(r)
-            doc = _doc(r["subject"], r["sender"], r["body"])
+            doc = _doc(r["subject"], r["sender"], r["body"], r["attachment_text"], r["attachment_names"])
             digest = hashlib.sha256(doc.encode()).hexdigest()
             if have.get(k) != (digest, MODEL) and k not in todo:
                 todo[k] = (doc, digest)
@@ -218,7 +223,7 @@ def _parse(raw: str) -> tuple[str, dict]:
             raise ValueError(f"Duplicate {name}: filter")
         filters[name] = value
     text = _FILTER.sub(" ", raw).strip()
-    if re.search(r"(?<!\S)(from|to|folder|after|before):", text, re.I):
+    if re.search(r"(?<!\S)(from|to|folder|after|before|has|attachment):", text, re.I):
         raise ValueError("A mail filter is missing a value or closing quote")
     return text, filters
 
@@ -297,13 +302,15 @@ class SearchResults(list):
 def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
            db_path: Path | None = None, folder: str | None = None, sender: str | None = None,
            recipient: str | None = None, since: str | None = None, until: str | None = None,
+           has_attachment: bool | None = None, attachment: str | None = None,
+           account_prefix: str | None = None,
            deduplicate_threads: bool = True) -> list[dict]:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
         raise ValueError("limit must be between 1 and 200")
     if not isinstance(raw, str) or len(raw) > 10_000:
         raise ValueError("query must be a string of at most 10000 characters")
     text, f = _parse(raw)
-    for name, value in (("folder", folder), ("from", sender), ("to", recipient), ("after", since)):
+    for name, value in (("folder", folder), ("from", sender), ("to", recipient), ("after", since), ("attachment", attachment)):
         if value is not None:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} filter must not be empty")
@@ -314,11 +321,27 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
             hi += 86400
         f["before"] = _dt.datetime.fromtimestamp(hi, _dt.timezone.utc).isoformat()
     where, params = [], []
-    for name, column in (("from", "sender"), ("to", "recipients"), ("folder", "folder")):
+    for name, column in (("from", "sender"), ("to", "recipients"), ("folder", "folder"), ("attachment", "attachment_names")):
         if name in f:
             where.append(f"e.{column} LIKE ? ESCAPE '\\'")
             value = f[name].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{value}%")
+    if "has" in f:
+        if f["has"].lower() != "attachment":
+            raise ValueError("Supported has: filter is has:attachment")
+        if has_attachment is False:
+            raise ValueError("has:attachment conflicts with has_attachment=False")
+        has_attachment = True
+    if has_attachment is not None:
+        if not isinstance(has_attachment, bool):
+            raise ValueError("has_attachment must be true or false")
+        where.append("e.attachment_count > 0" if has_attachment else "COALESCE(e.attachment_count,0) = 0")
+    if account_prefix is not None:
+        if not isinstance(account_prefix, str) or not account_prefix.strip("/"):
+            raise ValueError("account_prefix must not be empty")
+        prefix = account_prefix.rstrip("/").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("e.folder LIKE ? ESCAPE '\\'")
+        params.append(prefix + "/%")
     lo = _epoch(f["after"]) if "after" in f else None
     hi = _epoch(f["before"]) if "before" in f else None
     if lo is not None and hi is not None and lo >= hi:
@@ -357,9 +380,15 @@ def search(raw: str, limit: int = 40, use: tuple = ("fts", "vec", "rerank"), *,
                 expr = _fts_expr(text, conn, op)
                 if expr:
                     add(conn.execute(
-                        f"SELECT {cols}, snippet(emails_fts, 3, '\x02', '\x03', ' … ', 18) AS snip "
+                        f"SELECT {cols}, snippet(emails_fts, -1, '\x02', '\x03', ' … ', 18) AS snip, "
+                        "(instr(highlight(emails_fts,4,'\x02','\x03'),'\x02')>0 OR "
+                        "instr(highlight(emails_fts,5,'\x02','\x03'),'\x02')>0) AS attachment_hit, "
+                        "(instr(highlight(emails_fts,0,'\x02','\x03'),'\x02')>0 OR "
+                        "instr(highlight(emails_fts,1,'\x02','\x03'),'\x02')>0 OR "
+                        "instr(highlight(emails_fts,2,'\x02','\x03'),'\x02')>0 OR "
+                        "instr(highlight(emails_fts,3,'\x02','\x03'),'\x02')>0) AS message_hit "
                         f"FROM emails_fts JOIN emails e ON e.id = emails_fts.rowid "
-                        f"WHERE emails_fts MATCH ?{filt} ORDER BY bm25(emails_fts, 10, 5, 1, 1) LIMIT 200",
+                        f"WHERE emails_fts MATCH ?{filt} ORDER BY bm25(emails_fts, 10, 5, 1, 1, 1, 2) LIMIT 200",
                         [expr, *params]).fetchall())
 
             try:
@@ -439,7 +468,7 @@ def _rerank(conn, text: str, order: list[str], rows: dict) -> list[str]:
         f"SELECT id, body FROM emails WHERE id IN ({','.join('?' * len(head))})",
         [rows[k]["id"] for k in head])}
     docs = [f"{rows[k]['subject'] or ''}\n{rows[k]['sender'] or ''}\n"
-            f"{clean_body(bodies.get(rows[k]['id']) or '')[:RERANK_CHARS]}" for k in head]
+            f"{clean_body((rows[k]['snip'] or '') + ' ' + (bodies.get(rows[k]['id']) or ''))[:RERANK_CHARS]}" for k in head]
     scores = list(_cross_encoder().rerank(text, docs, batch_size=RERANK_TOP))
     # Blend, don't replace: the cross-encoder is strong on meaning but blind to
     # typos and opaque codes that the keyword lists already got right.
@@ -459,6 +488,10 @@ def thread_key(subject: str | None) -> str:
 
 def _result(r) -> dict:
     snip = r["snip"] or ""
+    keys = r.keys()
+    attachment_hit = "attachment_hit" in keys and bool(r["attachment_hit"])
+    message_hit = "message_hit" in keys and bool(r["message_hit"])
+    match_source = ("message_and_attachment" if message_hit else "attachment") if attachment_hit else "message"
     return {
         "id": r["id"],
         "date": _dt.datetime.fromtimestamp(r["date_ts"], _dt.timezone.utc).strftime("%Y-%m-%d") if r["date_ts"] else "",
@@ -467,6 +500,10 @@ def _result(r) -> dict:
         "from": r["sender"] or "",
         "subject": r["subject"] or "(no subject)",
         "snippet": snip,
+        "match_source": match_source,
+        "attachment_count": r["attachment_count"] or 0,
+        "attachments_indexed": bool(r["attachments_indexed"]),
+        "attachments": json.loads(r["attachments_json"] or "[]"),
         "message_id": r["message_id"],
         "reference": _messages.reference_for(_messages.key_for_row(r)),
         "uri": _messages.reference_for(_messages.key_for_row(r)),

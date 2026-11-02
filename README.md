@@ -1,9 +1,10 @@
 # thunderbird-mcp
 
 Search, read, reference, and send your Thunderbird mail from Terminalman,
-Claude Code, Codex, OpenCode, or a normal shell. Search uses a private local
-SQLite index; sending uses your Thunderbird account's SMTP settings and system
-keyring. IMAP handles Sent copies and requested folder operations.
+Claude Code, Codex, OpenCode, or a normal shell. Search downloaded mail and
+document attachments with a private local index, or search fresh mail directly
+from IMAP. Select Thunderbird accounts per operation. Sending uses saved drafts,
+SMTP, and credentials kept in the system keyring.
 
 ## Start using it
 
@@ -30,6 +31,8 @@ available through the shell, including from an already running agent.
 You can then ask:
 
 - “Search my mail for the cloud-provider invoice from May.”
+- “Check live IMAP for new unread mail in INBOX.”
+- “Find the agreement mentioned inside an attachment and read that attachment.”
 - “Read that conversation and give me a reference I can use in another session.”
 - “Prepare a reply to this mail saying the migration is complete.”
 - “Send draft `<draft-id>`.”
@@ -74,16 +77,23 @@ check, separate from the offline unit tests.
 
 ```bash
 tbmail status --network                 # Verify TLS/login; sends no mail
+tbmail accounts                         # Account IDs and identities; no credentials
 tbmail search 'from:alex storage' --limit 5
 tbmail search 'folder:INBOX after:2026-11-01' --keyword
+tbmail search --live --unread --limit 5  # Fresh IMAP mail, default INBOX
+tbmail search 'folder:Archive receipt' --live --account account2
+tbmail search 'has:attachment agreement' --keyword
+tbmail search --attachment report.pdf --account account2
 tbmail read 12345
 tbmail thread 12345 --bodies
 tbmail reference 12345                  # Markdown citation with a durable URI
 tbmail attachments 12345
+tbmail attachment-text 12345 1          # Read document text without exporting
 tbmail export 12345 ./message.eml
 tbmail export-attachment 12345 1 ./attachment.pdf
 tbmail reindex                         # Refresh downloaded mail
 tbmail --json search 'invoice'          # Structured output for scripts/agents
+tbmail folders --live --account account2
 ```
 
 Pass a returned `thunderbird://message/...` reference in place of a numeric ID
@@ -93,6 +103,13 @@ and folder changes. Integer IDs also stay stable during ordinary refreshes, but
 use the URI for references saved in another project or conversation. The search
 web app has a **Copy mail reference** button.
 
+Live searches return `thunderbird://imap/...` references. The same read, thread,
+reference, reply, attachment, and export commands accept them without a local
+index. These references bind the account endpoint, folder, UIDVALIDITY and UID.
+They expire when the message moves or the folder/account is replaced; a new
+live search is then required. Use a local message reference for citations that
+must survive folder moves.
+
 For rare messages without Message-ID, the fallback hashes the indexed headers
 and text. Messages with identical indexed text but different attachments can
 share that fallback reference; use a local numeric ID to select the exact copy.
@@ -100,6 +117,7 @@ share that fallback reference; use a local numeric ID to select the exact copy.
 ```bash
 tbmail draft --to colleague@example.org --subject 'Migration update' \
   --body-file ./reply.txt --attach ./report.pdf
+tbmail draft --account account2 --to colleague@example.org --subject 'Update' --body 'Ready.'
 tbmail reply 'thunderbird://message/...' --body 'Thanks, I will check.'
 tbmail drafts
 tbmail drafts <draft-id>
@@ -111,6 +129,9 @@ Drafts support To/Cc/Bcc and captured local attachments. Reply drafts preserve
 In-Reply-To and References, honor Reply-To, and exclude your address from reply-all.
 Drafts are local to this application; they do not appear in Thunderbird Drafts.
 `--body-file -` reads standard input. Use `tbmail --help` for all commands.
+Replies infer the original account when it can be identified; use `--account`
+to select it explicitly. Each saved draft retains its original account and
+sender even if you later change Thunderbird's default account.
 
 ## Sending and retry behavior
 
@@ -131,22 +152,24 @@ authenticate and issue NOOP without sending anything.
 
 | Workflow | Tools |
 | --- | --- |
-| Health and search | `mail_status`, `search_email`, `list_folders`, `reindex` |
+| Health and search | `mail_status`, `list_accounts`, `search_email`, `search_live_email`, `list_folders`, `reindex` |
 | Read and cite | `get_email`, `get_thread`, `get_email_reference` |
-| Original mail and attachments | `list_attachments`, `export_email`, `export_attachment` |
+| Original mail and attachments | `list_attachments`, `get_attachment_text`, `export_email`, `export_attachment` |
 | Prepare and send | `draft_email`, `draft_reply`, `get_draft`, `list_drafts`, `send_draft`, `send_email` |
 | Organize | `imap_list_folders`, `create_folder`, `move_emails`, `undo_move` |
 
-Resources: `thunderbird://status` and `thunderbird://message/{key}`.
+Resources: `thunderbird://status`, `thunderbird://message/{key}`, and
+`thunderbird://imap/{account}/{fingerprint}/{folder}/{uidvalidity}/{uid}`.
 Prompts: `find_mail(query)` and `reply_to_mail(reference, instructions)`.
 Tools have read/write annotations. Mail and attachment content is treated as
 untrusted data. The server uses stdio; protocol stdout contains only MCP messages.
 
 ## Search and indexing
 
-Search combines FTS5 keywords, typo correction, multilingual local embeddings,
+Local search combines FTS5 keywords, common-word typo correction, multilingual local embeddings,
 recency, and optional conversation deduplication. Filters include `from:`, `to:`,
-`folder:`, `after:YYYY-MM-DD`, and `before:YYYY-MM-DD`; `before:` is exclusive.
+`folder:`, `after:YYYY-MM-DD`, `before:YYYY-MM-DD`, `has:attachment`, and
+`attachment:filename`; `before:` is exclusive.
 The separate `since`/`until` parameters accept dates, with `until` including that
 whole day. Empty search lists recent mail. `semantic=False`/`--keyword` uses only
 keywords; search diagnostics explain when semantic search is unavailable.
@@ -156,19 +179,52 @@ uv run thunderbird-mcp-embed            # Incremental semantic vectors
 uv run thunderbird-mail-web            # Default: http://127.0.0.1:3458
 ```
 
-The index reads Thunderbird's **downloaded mbox mail**. Thunderbird must sync
-new messages and folders before local search can find them. Refreshing this
-index does not fetch mail from IMAP. MIME attachment exports likewise require
-the local original. Reads do not change read/unread flags. Bodies are indexed
+The local index reads Thunderbird's **downloaded mbox mail**. Thunderbird must
+sync new messages and folders before local search can find them. Refreshing
+this index does not fetch mail from IMAP. Local exports need the local original;
+live references fetch their original from IMAP. Reads do not change read/unread flags. Bodies are indexed
 up to 50,000 characters, with truncation reported. Export original `.eml` files
 for complete local content. Exports do not overwrite existing files or write
 inside Thunderbird mail storage.
+
+`search_live_email` / `tbmail search --live` searches one server folder, default
+INBOX. Words and quoted phrases use IMAP text matching; header/date filters and
+`--unread`/`--read` are supported. Live dates use the message header's calendar
+day. Results are headers, ordered by newest UID, and report omitted matches.
+Live threads follow reply headers within that folder, bounded to 100 candidates
+and 40 searches. Raw live messages and combined thread bodies are capped at
+25 MiB. Live search does not provide semantic ranking or extracted document text
+search; those use the local index.
+
+Attachment text search supports TXT/CSV/JSON and other text formats, HTML/XML,
+PDF, DOCX, XLSX, and PPTX. Filenames remain searchable when text extraction is
+unsupported. `get_attachment_text` / `tbmail attachment-text` reads a selected
+attachment, including from live mail. Results report `extracted`, `empty`,
+`unsupported`, `encrypted`, `too_large`, `error`, or `too_many`, plus truncation.
+Scanned PDFs need OCR, which is not included.
+
+Extraction limits are 8 MiB per attachment, 24 MiB decoded bytes and 64
+attachments per message, 25,000 text characters per attachment, and 100,000
+per message. Office archives are limited to 16 MiB expanded and 2,048 entries.
+PDFs are limited to 50 pages and a ten-second child process; POSIX systems also
+apply a CPU limit, and Linux caps process address space at 512 MiB. Macros and external links are never executed
+by extraction. No document content is uploaded for indexing. Mail text returned
+to a hosted AI client is sent to that client's model provider.
 
 Schema upgrades retain existing messages. Refreshes preserve IDs, skip expunged
 messages, and commit each folder atomically; if Thunderbird changes a folder
 during parsing, its previous index is kept for the next refresh. Threads use
 Message-ID/References/In-Reply-To relationships rather than merging unrelated
 messages with the same subject.
+
+Upgrading to v0.3 rebuilds the derived FTS index once and reparses existing
+folders to extract attachment text. Run `tbmail reindex --embeddings` after
+`uv sync --locked`, or let the installed indexing service finish the backfill.
+`tbmail status` reports pending extraction and format statuses. Existing mail
+references remain valid.
+Large full refreshes or embedding rebuilds can exceed an AI client's MCP tool
+timeout; run those through `tbmail reindex --embeddings` or the background
+service. Ordinary local searches remain available while backfilling.
 
 Systemd units in `systemd/` refresh the index and embeddings ten minutes after each completed run
 and run the existing authenticated web app. The web app loads no external page
@@ -184,8 +240,16 @@ Thunderbird's selected profile and default account supply hostnames, ports,
 identity, TLS mode, and Sent folder. Passwords stay in the system keyring:
 
 ```bash
-uv run python -m keyring set thunderbird-mcp <imap-username>
+tbmail accounts
+tbmail password-set --account account1 --protocol imap
+tbmail password-set --account account1 --protocol smtp
 ```
+
+Passwords are entered through a hidden prompt, or one line through stdin with
+`--stdin`. Each stored credential is scoped to account, host, port, username,
+and protocol. The previous `thunderbird-mcp` username keyring entry still works
+for an unambiguous default account. Secondary accounts use scoped credentials.
+No passwords or OAuth tokens are placed in MCP client configurations.
 
 Environment overrides:
 
@@ -200,16 +264,55 @@ Environment overrides:
 | `TB_IMAP_TLS`, `TB_SMTP_TLS` | `ssl` or `starttls`, with certificate verification |
 | `TB_IMAP_KEYRING_SERVICE`, `TB_SMTP_KEYRING_SERVICE` | Keyring service names; default `thunderbird-mcp` |
 | `TB_IMAP_PASSWORD`, `TB_SMTP_PASSWORD` | Optional environment credentials; prefer keyring |
+| `TB_IMAP_AUTH`, `TB_SMTP_AUTH` | `password` or `oauth2`; follows Thunderbird's OAuth setting when present |
 | `TB_SENT_FOLDER`, `TB_IMAP_ACCOUNT_DIR` | Sent folder and local account-directory mapping |
 | `TB_NETWORK_TIMEOUT` | Connection timeout in seconds; default 15 |
 | `TB_EMBED_THREADS` | Local model CPU threads per process; default 2 |
 | `MAIL_WEB_HOST`, `MAIL_WEB_PORT` | Web bind address and port |
 
+Global `TB_IMAP_*`, `TB_SMTP_*`, and identity overrides apply to the default
+account. Scope an override to another account with `TB_ACCOUNT_<ID>_<SETTING>`,
+for example `TB_ACCOUNT_ACCOUNT2_SMTP_AUTH=oauth2`. Explicit account selection
+does not inherit another account's host, sender, or credentials.
+
 Sending supports international display names and ASCII mailbox addresses.
 Outgoing attachments are capped at 25 MiB total; local MIME export at 100 MiB.
-IMAP operations target the configured account even when the index contains
-messages from several profiles/accounts. Never put credentials, exported mail,
+IMAP operations accept an account selector. Local account filtering uses its
+Thunderbird storage directory. Never put credentials, exported mail,
 or index/outbox databases in source control.
+
+## OAuth accounts
+
+OAuth2 uses XOAUTH2 for IMAP/SMTP, with account-scoped keyring storage and
+automatic refresh over verified HTTPS. This release imports tokens obtained
+through your own authorized OAuth application; it does not provide a browser
+consent flow or reuse Thunderbird's OAuth client registration.
+
+```bash
+tbmail auth-import --account account2 --protocol imap --token-file /private/imap-token.json
+tbmail auth-import --account account2 --protocol smtp --token-file /private/smtp-token.json
+tbmail auth-status --account account2 --protocol imap
+tbmail status --account account2 --network
+```
+
+Use `--token-file -` to read JSON from stdin. Accepted fields are `access_token`,
+`refresh_token`, `expires_in` or `expires_at`, `client_id`, `client_secret`,
+`token_url`, `scope`, and `token_type` (`Bearer`). Refresh needs a refresh token,
+client ID, and HTTPS token endpoint; provider settings determine whether a client
+secret is needed. Default endpoints are provided for Gmail and Microsoft mail.
+Set the selected account's authentication mode to `oauth2` if Thunderbird has not
+already done so. IMAP and SMTP tokens are stored separately; authorize the
+appropriate protocol scopes with your provider.
+
+Environment tokens use `TB_IMAP_OAUTH_ACCESS_TOKEN` and corresponding
+`REFRESH_TOKEN`, `EXPIRES_AT`, `CLIENT_ID`, `CLIENT_SECRET`, `TOKEN_URL`, `SCOPE`
+suffixes, or `TB_SMTP_OAUTH_*`; account-prefixed forms work too. Keyring storage
+is preferable to long-lived environment secrets. Token values never appear in
+status responses. Protocol and refresh behavior have synthetic tests; provider
+consent and organization policies still require your own authorized account setup.
+
+Provider references: [Gmail XOAUTH2](https://developers.google.com/workspace/gmail/imap/xoauth2-protocol)
+and [Microsoft IMAP/SMTP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth).
 
 ## Development and verification
 
@@ -217,12 +320,34 @@ or index/outbox databases in source control.
 uv sync --locked
 uv run python -m unittest discover -s tests -v
 uv run python -m compileall -q thunderbird_mcp tests
+uv run python scripts/benchmark_search.py --require-recall 1 --require-precision 1 --require-no-false-positives
 ```
 
 The tests use synthetic mailboxes and mocked mail transports. They exercise
-schema upgrades, reference stability, reply headers, search behavior, attachment
+schema upgrades, reference stability, live UID validation and unchanged read
+flags, account isolation, OAuth refresh, reply headers, search behavior, attachment
 exports, exact draft delivery, duplicate/ambiguous-send prevention, client-config
 preservation, and a real MCP stdio client/server handshake. No tests send mail.
+
+GitHub Actions runs the synthetic suite, keyword benchmark and package build on
+Linux (Python 3.10–3.12) and macOS (Python 3.12). Live credentials and paid AI
+clients are not used by CI. Automatic client setup and systemd integration were
+developed for Linux; a macOS unit-test result is not a full desktop integration
+test. Windows deployment is not yet verified.
+
+The benchmark generates 78 messages with 13 labeled query cases and distractors
+outside each filter's scope. It reports recall@k, returned-result precision,
+reciprocal rank, top-result accuracy, negative-query results, and
+latency. It is a small regression corpus, not evidence that this MCP outperforms
+another system. Optional `--semantic` also evaluates local embeddings and may
+download the model. To make a comparison on identical inputs:
+
+```bash
+uv run python scripts/benchmark_search.py --export-corpus /tmp/synthetic-mail-benchmark
+# Index its profile/ mbox files in another system; run queries.json cases.
+# Save ranked Message-IDs as {"case-id": ["<message-id>", ...], ...}.
+uv run python scripts/benchmark_search.py --score-results /tmp/other-system-results.json
+```
 
 The dependency lock is checked in and the MCP SDK is constrained to its supported
 v1 API. Keep `backups/`, `exports/`, private retrieval evaluation data, logs,

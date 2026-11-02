@@ -20,11 +20,12 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .attachments import summarise_message
 from .profile import Folder, discover_folders, find_profile
 
 # Cap stored body length so the index stays manageable on huge newsletters.
 MAX_BODY_CHARS = 50_000
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS emails (
@@ -46,31 +47,35 @@ CREATE TABLE IF NOT EXISTS emails (
     in_reply_to TEXT,
     references_json TEXT DEFAULT '[]',
     attachment_count INTEGER DEFAULT 0,
-    body_truncated INTEGER DEFAULT 0
+    body_truncated INTEGER DEFAULT 0,
+    attachment_text TEXT DEFAULT '',
+    attachment_names TEXT DEFAULT '',
+    attachments_json TEXT DEFAULT '[]',
+    attachments_indexed INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_emails_folder ON emails(folder);
 CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date_ts);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts USING fts5(
-    subject, sender, recipients, body,
+    subject, sender, recipients, body, attachment_text, attachment_names,
     content='emails', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2'
 );
 
 -- Keep the FTS index in sync with the content table.
 CREATE TRIGGER IF NOT EXISTS emails_ai AFTER INSERT ON emails BEGIN
-    INSERT INTO emails_fts(rowid, subject, sender, recipients, body)
-    VALUES (new.id, new.subject, new.sender, new.recipients, new.body);
+    INSERT INTO emails_fts(rowid, subject, sender, recipients, body, attachment_text, attachment_names)
+    VALUES (new.id, new.subject, new.sender, new.recipients, new.body, new.attachment_text, new.attachment_names);
 END;
 CREATE TRIGGER IF NOT EXISTS emails_ad AFTER DELETE ON emails BEGIN
-    INSERT INTO emails_fts(emails_fts, rowid, subject, sender, recipients, body)
-    VALUES ('delete', old.id, old.subject, old.sender, old.recipients, old.body);
+    INSERT INTO emails_fts(emails_fts, rowid, subject, sender, recipients, body, attachment_text, attachment_names)
+    VALUES ('delete', old.id, old.subject, old.sender, old.recipients, old.body, old.attachment_text, old.attachment_names);
 END;
-CREATE TRIGGER IF NOT EXISTS emails_au AFTER UPDATE OF subject, sender, recipients, body ON emails BEGIN
-    INSERT INTO emails_fts(emails_fts, rowid, subject, sender, recipients, body)
-    VALUES ('delete', old.id, old.subject, old.sender, old.recipients, old.body);
-    INSERT INTO emails_fts(rowid, subject, sender, recipients, body)
-    VALUES (new.id, new.subject, new.sender, new.recipients, new.body);
+CREATE TRIGGER IF NOT EXISTS emails_au AFTER UPDATE OF subject, sender, recipients, body, attachment_text, attachment_names ON emails BEGIN
+    INSERT INTO emails_fts(emails_fts, rowid, subject, sender, recipients, body, attachment_text, attachment_names)
+    VALUES ('delete', old.id, old.subject, old.sender, old.recipients, old.body, old.attachment_text, old.attachment_names);
+    INSERT INTO emails_fts(rowid, subject, sender, recipients, body, attachment_text, attachment_names)
+    VALUES (new.id, new.subject, new.sender, new.recipients, new.body, new.attachment_text, new.attachment_names);
 END;
 
 -- Term list for typo correction in search.
@@ -157,27 +162,42 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
         return
     had_fts = bool(conn.execute("SELECT 1 FROM sqlite_master WHERE name='emails_fts'").fetchone())
-    conn.executescript(SCHEMA)
+    # The derived FTS table and its triggers must change together. An aborted
+    # migration rolls back to the original searchable database.
+    conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
     columns = {r[1] for r in conn.execute("PRAGMA table_info(emails)")}
     additions = {
         "stable_key": "TEXT", "source_key": "INTEGER", "source_offset": "INTEGER",
         "source_length": "INTEGER", "to_header": "TEXT", "cc": "TEXT", "reply_to": "TEXT",
         "in_reply_to": "TEXT", "references_json": "TEXT DEFAULT '[]'",
         "attachment_count": "INTEGER DEFAULT 0", "body_truncated": "INTEGER DEFAULT 0",
+        "attachment_text": "TEXT DEFAULT ''", "attachment_names": "TEXT DEFAULT ''",
+        "attachments_json": "TEXT DEFAULT '[]'", "attachments_indexed": "INTEGER DEFAULT 0",
     }
     for name, definition in additions.items():
         if name not in columns:
             conn.execute(f"ALTER TABLE emails ADD COLUMN {name} {definition}")
     if "schema_version" not in {r[1] for r in conn.execute("PRAGMA table_info(folders)")}:
         conn.execute("ALTER TABLE folders ADD COLUMN schema_version INTEGER DEFAULT 0")
-    # Older releases updated the FTS index even for unrelated metadata changes.
-    conn.execute("DROP TRIGGER IF EXISTS emails_au")
-    conn.execute("""CREATE TRIGGER emails_au AFTER UPDATE OF subject, sender, recipients, body
-        ON emails BEGIN
-        INSERT INTO emails_fts(emails_fts,rowid,subject,sender,recipients,body)
-        VALUES ('delete',old.id,old.subject,old.sender,old.recipients,old.body);
-        INSERT INTO emails_fts(rowid,subject,sender,recipients,body)
-        VALUES (new.id,new.subject,new.sender,new.recipients,new.body); END""")
+    # FTS5 columns cannot be altered. Replace only the derived search index;
+    # content rows, numeric IDs, references, and source locations stay intact.
+    fts_columns = "subject,sender,recipients,body,attachment_text,attachment_names"
+    old_fts = "attachment_text" not in {r[1] for r in conn.execute("PRAGMA table_info(emails_fts)")}
+    for trigger in ("emails_ai", "emails_ad", "emails_au"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    if old_fts:
+        conn.execute("DROP TABLE IF EXISTS emails_vocab")
+        conn.execute("DROP TABLE emails_fts")
+        conn.execute(f"CREATE VIRTUAL TABLE emails_fts USING fts5({fts_columns},"
+                     "content='emails',content_rowid='id',tokenize='unicode61 remove_diacritics 2')")
+        conn.execute("CREATE VIRTUAL TABLE emails_vocab USING fts5vocab(emails_fts, 'row')")
+    old_values = ",".join(f"old.{name}" for name in fts_columns.split(","))
+    new_values = ",".join(f"new.{name}" for name in fts_columns.split(","))
+    insert = f"INSERT INTO emails_fts(rowid,{fts_columns}) VALUES (new.id,{new_values});"
+    delete = f"INSERT INTO emails_fts(emails_fts,rowid,{fts_columns}) VALUES ('delete',old.id,{old_values});"
+    conn.execute(f"CREATE TRIGGER emails_ai AFTER INSERT ON emails BEGIN {insert} END")
+    conn.execute(f"CREATE TRIGGER emails_ad AFTER DELETE ON emails BEGIN {delete} END")
+    conn.execute(f"CREATE TRIGGER emails_au AFTER UPDATE OF {fts_columns} ON emails BEGIN {delete} {insert} END")
     for row in conn.execute("SELECT id,message_id,sender,recipients,subject,date_ts,body FROM emails WHERE stable_key IS NULL"):
         key = stable_key(row["message_id"], row["sender"], row["recipients"], row["subject"], row["date_ts"], row["body"])
         conn.execute("UPDATE emails SET stable_key = ?, body_truncated = ? WHERE id = ?",
@@ -189,12 +209,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_message_links_mid ON message_links(message_id)")
     conn.execute("CREATE TRIGGER IF NOT EXISTS emails_links_ad AFTER DELETE ON emails BEGIN DELETE FROM message_links WHERE email_id=old.id; END")
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='embeddings'").fetchone():
-        conn.execute("""CREATE TRIGGER IF NOT EXISTS embeddings_invalidate
-            AFTER UPDATE OF subject,sender,body ON emails
-            WHEN old.subject IS NOT new.subject OR old.sender IS NOT new.sender OR old.body IS NOT new.body BEGIN
+        conn.execute("DROP TRIGGER IF EXISTS embeddings_invalidate")
+        conn.execute("""CREATE TRIGGER embeddings_invalidate
+            AFTER UPDATE OF subject,sender,body,attachment_text,attachment_names ON emails
+            WHEN old.subject IS NOT new.subject OR old.sender IS NOT new.sender OR old.body IS NOT new.body
+            OR old.attachment_text IS NOT new.attachment_text OR old.attachment_names IS NOT new.attachment_names BEGIN
             DELETE FROM embeddings WHERE key IN (old.stable_key,old.message_id); END""")
     conn.execute("INSERT OR IGNORE INTO index_meta(key,value) SELECT 'next_message_id',COALESCE(MAX(id),0)+1 FROM emails")
-    if not had_fts:
+    if not had_fts or old_fts:
         conn.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
@@ -301,9 +323,13 @@ class ParsedMessage:
     references_json: str = "[]"
     attachment_count: int = 0
     body_truncated: int = 0
+    attachment_text: str = ""
+    attachment_names: str = ""
+    attachments_json: str = "[]"
+    attachments_indexed: int = 0
 
 
-def parse_message(msg, **location) -> ParsedMessage:
+def parse_message(msg, *, extract_attachments: bool = True, **location) -> ParsedMessage:
     body = _extract_body(msg) or ""
     to, cc = _header(msg, "to"), _header(msg, "cc")
     item = ParsedMessage(
@@ -316,7 +342,8 @@ def parse_message(msg, **location) -> ParsedMessage:
         references_json=json.dumps(message_ids(_header(msg, "references"))),
         attachment_count=sum(1 for p in msg.walk() if not p.is_multipart()
                              and (p.get_content_disposition() == "attachment" or p.get_filename())),
-        body_truncated=int(len(body) > MAX_BODY_CHARS), **location,
+        body_truncated=int(len(body) > MAX_BODY_CHARS),
+        **(summarise_message(msg) if extract_attachments else {}), **location,
     )
     item.stable_key = stable_key(item.message_id, item.sender, item.recipients,
                                 item.subject, item.date_ts, item.body)

@@ -67,6 +67,55 @@ class CliTests(unittest.TestCase):
         self.assertFalse(search.call_args.kwargs["deduplicate_threads"])
         self.assertEqual(search.call_args.kwargs["sender"], "person")
 
+    def test_live_search_keeps_folder_operator_and_account_selection(self):
+        with patch("thunderbird_mcp.server.search_live_email", return_value={"results": []}) as search:
+            cli.dispatch(cli.parser().parse_args(["search", "folder:Archive", "receipt", "--live", "--account", "account2", "--unread"]))
+        self.assertEqual(search.call_args.args, ("folder:Archive receipt",))
+        self.assertIsNone(search.call_args.kwargs["folder"])
+        self.assertEqual(search.call_args.kwargs["account"], "account2")
+        self.assertTrue(search.call_args.kwargs["unread"])
+
+    def test_local_search_attachment_and_account_filters(self):
+        with patch("thunderbird_mcp.server.search_email", return_value={"results": []}) as search:
+            cli.dispatch(cli.parser().parse_args(["search", "report", "--has-attachment", "--attachment", "notes.pdf", "--account", "account2"]))
+        self.assertTrue(search.call_args.kwargs["has_attachment"])
+        self.assertEqual(search.call_args.kwargs["attachment"], "notes.pdf")
+        self.assertEqual(search.call_args.kwargs["account"], "account2")
+
+    def test_search_rejects_filters_that_do_not_apply_to_source(self):
+        for args in (["--live", "--has-attachment"], ["--live", "--attachment", "a.pdf"], ["--unread"], ["--subject", "meeting"]):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                cli.dispatch(cli.parser().parse_args(["search", *args]))
+
+    def test_oauth_import_reads_stdin_without_returning_token(self):
+        output = io.StringIO()
+        secret = "synthetic-access-token"
+        with patch("sys.stdin", io.StringIO(json.dumps({"access_token": secret}))), \
+             patch("thunderbird_mcp.outgoing.account_config", return_value={"account_id": "account2"}), \
+             patch("thunderbird_mcp.oauth.store_token", return_value={"stored": True}) as store, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["auth-import", "--account", "account2", "--protocol", "smtp", "--token-file", "-"]), 0)
+        self.assertEqual(store.call_args.args, ({"account_id": "account2"}, "smtp", {"access_token": secret}))
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_invalid_oauth_json_does_not_echo_input(self):
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO("synthetic-secret-with-invalid-json")), \
+             patch("thunderbird_mcp.outgoing.account_config", return_value={}), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["auth-import", "--token-file", "-"]), 1)
+        self.assertNotIn("synthetic-secret", output.getvalue())
+
+    def test_password_stdin_preserves_spaces_and_keeps_output_redacted(self):
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO("synthetic password  \n")), \
+             patch("thunderbird_mcp.outgoing.account_config", return_value={"account_id": "account2"}), \
+             patch("thunderbird_mcp.outgoing.store_password", return_value={"stored": True}) as store, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["password-set", "--account", "account2", "--protocol", "smtp", "--stdin"]), 0)
+        self.assertEqual(store.call_args.args, ({"account_id": "account2"}, "smtp", "synthetic password  "))
+        self.assertNotIn("synthetic password", output.getvalue())
+
     def test_send_preview_preserves_prior_delivery_audit(self):
         audit = {"sent": True, "sent_copy_saved": False}
         with patch("thunderbird_mcp.server.get_draft", return_value={"status": "sent", "delivery": audit}):

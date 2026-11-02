@@ -4,7 +4,7 @@ import email
 import os
 from unittest.mock import patch
 
-from thunderbird_mcp import index, messages
+from thunderbird_mcp import attachments, index, messages
 from test_index import MailFixture, mail
 
 
@@ -96,6 +96,48 @@ class MessageTests(MailFixture):
         self.folder("INBOX", [mail(**{"X-Mozilla-Status": "0008"})])
         with self.assertRaises(LookupError):
             messages.export_email("<one@example.test>", self.root / "deleted.eml", db_path=self.db)
+
+    def test_attachment_text_uses_charset_and_only_extracts_requested_part(self):
+        message = mail()
+        message.add_attachment(b"unrelated PDF", maintype="application", subtype="pdf", filename="other.pdf")
+        message.add_attachment("Café project notes", subtype="plain", charset="iso-8859-1", filename="notes.txt")
+        self.folder("INBOX", [message])
+        with patch.object(attachments, "extract_text", return_value={"text": "", "status": "unsupported", "truncated": False}):
+            self.refresh()
+        with patch.object(attachments, "extract_text", wraps=attachments.extract_text) as extract:
+            value = messages.get_attachment_text("<one@example.test>", "2", max_chars=4, db_path=self.db)
+        self.assertEqual(value["text"], "Café")
+        self.assertEqual(value["status"], "extracted")
+        self.assertTrue(value["truncated"])
+        self.assertEqual(value["attachment"]["filename"], "notes.txt")
+        self.assertEqual(extract.call_count, 1)
+        self.assertEqual(extract.call_args.kwargs["charset"], "iso-8859-1")
+
+    def test_attachment_text_reports_unsupported_and_rejects_invalid_ids(self):
+        message = mail()
+        message.add_attachment(b"binary data", maintype="application", subtype="octet-stream", filename="file.bin")
+        self.folder("INBOX", [message])
+        self.refresh()
+        value = messages.get_attachment_text("<one@example.test>", 1, db_path=self.db)
+        self.assertEqual(value["status"], "unsupported")
+        self.assertEqual(value["text"], "")
+        for identifier in (0, -1, True, 1.5, "", "01", "../file.bin"):
+            with self.subTest(identifier=identifier), self.assertRaises(ValueError):
+                messages.get_attachment_text("<one@example.test>", identifier, db_path=self.db)
+        for count in (-1, True, 25_001):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                messages.get_attachment_text("<one@example.test>", 1, max_chars=count, db_path=self.db)
+        with self.assertRaises(LookupError):
+            messages.get_attachment_text("<one@example.test>", 2, db_path=self.db)
+
+    def test_same_bytes_with_different_formats_keep_distinct_extraction_status(self):
+        message = mail()
+        for filename in ("notes.txt", "notes.bin"):
+            message.add_attachment(b"same bytes", maintype="application", subtype="octet-stream", filename=filename)
+        self.folder("INBOX", [message])
+        self.refresh()
+        value = messages.list_attachments("<one@example.test>", db_path=self.db)
+        self.assertEqual([attachment["status"] for attachment in value["attachments"]], ["extracted", "unsupported"])
 
     def test_invalid_reference_and_out_of_range_limits_are_rejected(self):
         self.folder("INBOX", [mail()])
