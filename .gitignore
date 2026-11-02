@@ -25,3 +25,5 @@ exports/
 /dist/
 /build/
 *.egg-info/
+*.jsonl
+/client-test-reports/

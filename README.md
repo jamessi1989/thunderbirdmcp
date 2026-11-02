@@ -34,6 +34,42 @@ You can then ask:
 - “Prepare a reply to this mail saying the migration is complete.”
 - “Send draft `<draft-id>`.”
 
+## Check Codex, Claude, and OpenCode
+
+Check the real mailbox and each client's registration:
+
+```bash
+tbmail status --network
+codex mcp get thunderbird
+claude mcp get thunderbird
+opencode mcp list
+```
+
+In a new client session, ask: “Use the thunderbird MCP to search my mail for
+invoices, read the most relevant result, and give me its stable reference.”
+Codex and Claude also show active MCP connections with `/mcp`. OpenCode's MCP
+configuration applies to whichever model you select, including GLM.
+
+An opt-in test checks actual model tool calls in all three clients:
+
+```bash
+uv run python scripts/test_clients.py
+```
+
+It creates a temporary synthetic mailbox and exposes only `search_email`,
+`get_email`, and `get_email_reference`. A client passes only after successful
+tool calls return a hidden verification code and the correct reference. The
+test uses your configured model accounts and may consume model credits. It
+does not read your real mail or send anything. To select one client/model:
+
+```bash
+uv run python scripts/test_clients.py --clients opencode --opencode-model provider/model
+```
+
+Use `--report-dir /tmp/mail-client-check` to retain private troubleshooting logs.
+Client flags can change between releases; this script is an opt-in integration
+check, separate from the offline unit tests.
+
 ## Terminal commands
 
 ```bash
