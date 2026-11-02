@@ -21,6 +21,11 @@ Apple Silicon, Linux and Windows retain their normal platform-specific runtime
 resolution. The [published wheel files](https://pypi.org/project/onnxruntime/1.23.2/#files)
 and lockfile make this boundary explicit.
 
+The current `cryptography` dependency also builds from source on Intel macOS.
+Install Xcode Command Line Tools, Rust and OpenSSL before installing the package
+(Homebrew: `brew install openssl@3 rust`). These are build-time prerequisites;
+see the [upstream macOS source-build instructions](https://cryptography.io/en/latest/installation/#building-cryptography-on-macos).
+
 Linux is the primary tested desktop. macOS has profile discovery and automated
 package/setup checks, but a successful CI run does not verify a real Thunderbird
 desktop, keychain, and AI-client combination. Current source includes native

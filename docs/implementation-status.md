@@ -32,7 +32,7 @@ or deliveries are needed to build and test these changes.
 | R19 | Implemented | Opt-in bounded local Tesseract/Poppler/Pillow OCR. Six default regressions and an opt-in actual-engine test pass; real synthetic PNG/scanned-PDF extraction succeeded. |
 | R20 | Integration implemented; desktop verification open | Pinned separate native addon/broker integration, isolated conflicting package environments and three client configurations. Seven helper tests plus actual companion catalogue/stdio validation; native desktop operations not exercised. |
 
-The integrated suite passed **328 tests**, with two expected Linux-run skips:
+The final integrated CI suite passed **329 tests**, with two expected Linux-run skips:
 the native Windows launcher execution and the separately exercised optional
 real-OCR smoke. The 78-message/13-case keyword benchmark retained recall,
 precision, MRR and top-1 accuracy of **1.0**, including its negative case. The
@@ -41,7 +41,8 @@ Linux/Python 3.11: six launchers, three client configurations, 56-tool protocol
 discovery, synthetic search/read/reference/resource/attachments/drafts and
 unchanged fixture profiles. Application networking was blocked and the keyring
 disabled during those install checks. The final publication runs the
-[integrated CI matrix](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml).
+[integrated CI matrix](https://github.com/jamessi1989/thunderbirdmcp/actions/runs/41535462708),
+which passed all five jobs at runtime/test commit `97e9748`.
 The macOS release job uses the supported `macos-15-intel` image: GitHub's arm64
 runner pool reported capacity failures before acquiring a runner. This changes
 the execution architecture, not the required suite/benchmark/install checks;
