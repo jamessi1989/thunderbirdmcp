@@ -1,20 +1,45 @@
 # thunderbird-mcp
 
-Search, read, reference, and send your Thunderbird mail from Terminalman,
-Claude Code, Codex, OpenCode, or a normal shell. Search downloaded mail and
-document attachments with a private local index, or search fresh mail directly
-from IMAP. Select Thunderbird accounts per operation. Sending uses saved drafts,
-SMTP, and credentials kept in the system keyring.
+**Search and reference your Thunderbird mail from coding agents.**
+
+[![Mail MCP checks](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml/badge.svg)](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml)
+[Demo](docs/demo.md) · [Installation guide](docs/installation.md) ·
+[Releases](https://github.com/jamessi1989/thunderbirdmcp/releases) ·
+[Report your installation](https://github.com/jamessi1989/thunderbirdmcp/issues/new?template=installation-feedback.yml)
+
+Find a phrase inside a PDF or Office attachment, carry a mail reference into
+another project, and prepare a reply from Claude Code, Codex, OpenCode, Terminalman,
+or a normal shell. The local index searches downloaded mail by keywords or meaning;
+live IMAP search finds mail that Thunderbird has not downloaded yet. Sending uses
+saved drafts, SMTP, and credentials kept in the system keyring.
+
+![Synthetic demo: search an invoice attachment, reuse a mail reference, and prepare an unsent reply](docs/demo.svg)
 
 ## Start using it
+
+You need Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Clone the project and try the demo before connecting your mailbox:
 
 ```bash
 git clone https://github.com/jamessi1989/thunderbirdmcp.git ~/projects/thunderbirdmcp
 cd ~/projects/thunderbirdmcp
 uv sync --locked
+uv run python scripts/demo.py
+```
+
+The demo uses temporary synthetic mail and an invoice PDF. It prepares an unsent
+reply; it needs no mail credentials or AI model. To use your own mailbox,
+configure Thunderbird to download messages in mbox format, then run:
+
+```bash
 uv run thunderbird-mcp-index
 uv run thunderbird-mcp-setup --apply
 ```
+
+The [installation guide](docs/installation.md) covers credentials, custom profiles,
+installing a release wheel without a checkout, and troubleshooting. Linux is the
+primary tested desktop; Linux and macOS run the synthetic suite and package
+installation checks in CI. Native Windows installation is not yet verified.
 
 Setup installs `tbmail`, `thunderbird-mail`, `thunderbird-mcp`, and
 `thunderbird-mcp-setup` in `~/.local/bin`. It registers the MCP in the global
@@ -325,7 +350,7 @@ Environment overrides:
 | Variable | Meaning |
 | --- | --- |
 | `TB_PROFILE`, `TB_ACCOUNT` | Thunderbird profile path and account ID |
-| `TB_MAIL_INDEX_DB` | Index path; default `mail-index.sqlite` in this checkout |
+| `TB_MAIL_INDEX_DB` | Index path; checkout default `mail-index.sqlite`, installed-package default in the user data directory ([paths](docs/installation.md#data-and-configuration-paths)) |
 | `TB_OUTBOX_DB` | Draft/delivery database; default beside the index |
 | `TB_FROM` | Sending identity, e.g. `Name <you@example.org>` |
 | `TB_IMAP_HOST`, `TB_IMAP_PORT`, `TB_IMAP_USER` | IMAP connection |
@@ -399,11 +424,13 @@ flags, account isolation, OAuth refresh, reply headers, search behavior, attachm
 exports, exact draft delivery, duplicate/ambiguous-send prevention, client-config
 preservation, and a real MCP stdio client/server handshake. No tests send mail.
 
-GitHub Actions runs the synthetic suite, keyword benchmark and package build on
-Linux (Python 3.10–3.12) and macOS (Python 3.12). Live credentials and paid AI
-clients are not used by CI. Automatic client setup and systemd integration were
-developed for Linux; a macOS unit-test result is not a full desktop integration
-test. Windows deployment is not yet verified.
+GitHub Actions runs the synthetic suite, keyword benchmark, package build, and
+clean wheel installation checks on Linux (Python 3.10–3.12) and macOS (Python 3.12).
+The installation check uses a fresh virtual environment and temporary home,
+checks client setup and launchers, and calls the installed MCP from an unrelated
+working directory. Live credentials and paid AI clients are not used by CI.
+These checks do not establish real desktop/keyring integration on every platform.
+Windows deployment is not yet verified.
 
 For v0.3.0, all 162 tests, the keyword benchmark, and package builds passed on
 the full matrix in [GitHub Actions](https://github.com/jamessi1989/thunderbirdmcp/actions/runs/41479433495).
@@ -429,3 +456,14 @@ uv run python scripts/benchmark_search.py --score-results /tmp/other-system-resu
 The dependency lock is checked in and the MCP SDK is constrained to its supported
 v1 API. Keep `backups/`, `exports/`, private retrieval evaluation data, logs,
 and private SQLite files out of Git. Published tests contain synthetic mail only.
+
+## Feedback and contributing
+
+Installation successes and failures are both useful. Use the
+[installation feedback form](https://github.com/jamessi1989/thunderbirdmcp/issues/new?template=installation-feedback.yml)
+to share your platform, versions, and which checks worked. Independent installation
+reports are still needed; automated checks and maintainer smoke tests are tracked
+separately. See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification,
+and [CHANGELOG.md](CHANGELOG.md) for release changes.
+
+Released under the [MIT licence](LICENSE).

@@ -42,7 +42,10 @@ def configure_session_environment(env: MutableMapping[str, str] | None = None) -
     env = os.environ if env is None else env
     if env.get("DBUS_SESSION_BUS_ADDRESS"):
         return False
-    uid = os.getuid()
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return False
+    uid = getuid()
     candidates = []
     if env.get("XDG_RUNTIME_DIR"):
         candidates.append(Path(env["XDG_RUNTIME_DIR"]))

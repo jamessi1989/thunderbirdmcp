@@ -141,6 +141,51 @@ command = "keep"
             plan = setup.build_plan(home=self.home, project=self.project, python=Path(sys.executable))
         self.assertEqual([x["name"] for x in plan["report"]["clients"]], ["claude", "agy"])
 
+    def test_installed_package_uses_running_interpreter_without_checkout_venv(self):
+        with patch.object(setup, "__file__", str(self.project / "thunderbird_mcp/setup.py")):
+            plan = setup.build_plan(home=self.home, clients=["claude"])
+        self.assertEqual(plan["report"]["change_count"], 5)
+        launcher = next(change for change in plan["changes"] if change["path"].endswith("/tbmail"))
+        self.assertIn(str(Path(sys.executable).absolute()).encode(), launcher["after"])
+        self.assertNotIn(str(self.project / ".venv/bin/python").encode(), launcher["after"])
+
+    def test_explicit_home_ignores_external_client_directory_overrides(self):
+        outside = self.root / "unselected config"
+        with patch.dict(os.environ, {"CODEX_HOME": str(outside), "CLAUDE_CONFIG_DIR": str(outside), "XDG_CONFIG_HOME": str(outside)}):
+            plan = self.plan(["claude", "codex", "opencode"])
+            setup.apply_plan(plan)
+        self.assertFalse(outside.exists())
+        self.assertTrue(all(Path(change["path"]).is_relative_to(self.home) for change in plan["changes"]))
+
+    def test_uv_tool_entrypoint_symlinks_are_preserved(self):
+        environment = self.root / "tool environment/bin"
+        environment.mkdir(parents=True)
+        python = environment / "python"
+        python.symlink_to(sys.executable)
+        commands = {"thunderbird-mcp": "server", "tbmail": "cli", "thunderbird-mail": "cli", "thunderbird-mcp-setup": "setup"}
+        for name, module in commands.items():
+            target = environment / name
+            target.write_text(f"#!/usr/bin/env python3\nfrom thunderbird_mcp.{module} import main\n", encoding="utf-8")
+            target.chmod(0o755)
+            link = self.home / ".local/bin" / name
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(target)
+        plan = setup.build_plan(home=self.home, project=self.project, python=python, clients=["claude"])
+        self.assertEqual(plan["report"]["change_count"], 1)
+        setup.apply_plan(plan)
+        self.assertTrue(all((self.home / ".local/bin" / name).is_symlink() for name in commands))
+        self.assertEqual(sum(bool(item.get("preserved_entrypoint")) for item in plan["report"]["files"]), 4)
+
+    def test_unrelated_command_symlinks_remain_rejected(self):
+        target = self.write("unrelated-command", "#!/bin/sh\nexit 0\n")
+        target.chmod(0o755)
+        link = self.home / ".local/bin/tbmail"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.plan(["claude"])
+        self.assertEqual(link.resolve(), target)
+
 
 if __name__ == "__main__":
     unittest.main()

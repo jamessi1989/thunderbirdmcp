@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Installation and client setup instructions
+    url: https://github.com/jamessi1989/thunderbirdmcp#start-using-it
+    about: Find setup, reconnect, credential configuration, and verification instructions.
+  - name: Contributing and verification guidance
+    url: https://github.com/jamessi1989/thunderbirdmcp/blob/main/CONTRIBUTING.md
+    about: Learn how to share a synthetic reproduction or an independent installation report.

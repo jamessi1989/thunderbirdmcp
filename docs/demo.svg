@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="842" viewBox="0 0 1040 842" role="img" aria-labelledby="title description">
+<title id="title">Thunderbird MCP: search a PDF and prepare an unsent reply</title>
+<desc id="description">Verified synthetic demo using separate tbmail processes. This is a compact view of actual JSON results with the random draft identifier normalized.</desc>
+<rect width="1040" height="842" rx="14" fill="#0c1220"/>
+<path d="M14 0 H1026 Q1040 0 1040 14 V48 H0 V14 Q0 0 14 0" fill="#182235"/>
+<circle cx="26" cy="24" r="6" fill="#fb7185"/><circle cx="46" cy="24" r="6" fill="#fbbf24"/><circle cx="66" cy="24" r="6" fill="#4ade80"/>
+<text x="98" y="30" fill="#cbd5e1" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="14">python scripts/demo.py</text>
+<g font-family="ui-monospace, Menlo, Consolas, monospace" font-size="14">
+<text x="28" y="80" fill="#86efac">THUNDERBIRD MCP / OFFLINE MAIL DEMO</text>
+<text x="28" y="104" fill="#dbe4f0">Synthetic mailbox. Actual tbmail processes. No model downloads.</text>
+<text x="28" y="128" fill="#dbe4f0"></text>
+<text x="28" y="152" fill="#67e8f9">$ tbmail search --keyword INV-2049 --json</text>
+<text x="28" y="176" fill="#dbe4f0">1 match / source: attachment / invoice.pdf</text>
+<text x="28" y="200" fill="#dbe4f0">Invoice for the Aurora rollout</text>
+<text x="28" y="224" fill="#dbe4f0">REF=&quot;thunderbird://message/mid%3A%3Cinvoice%40demo.example.test%3E&quot;</text>
+<text x="28" y="248" fill="#dbe4f0"></text>
+<text x="28" y="272" fill="#67e8f9">$ tbmail read &quot;$REF&quot; --json    # a new terminal process</text>
+<text x="28" y="296" fill="#dbe4f0">From: Billing &lt;billing@example.test&gt;</text>
+<text x="28" y="320" fill="#dbe4f0">The invoice is attached. Please confirm the payment date.</text>
+<text x="28" y="344" fill="#dbe4f0"></text>
+<text x="28" y="368" fill="#67e8f9">$ tbmail thread &quot;$REF&quot; --json</text>
+<text x="28" y="392" fill="#dbe4f0">2 messages / linked by Message-ID and reply headers</text>
+<text x="28" y="416" fill="#dbe4f0"></text>
+<text x="28" y="440" fill="#67e8f9">$ tbmail attachment-text &quot;$REF&quot; 1 --json</text>
+<text x="28" y="464" fill="#dbe4f0">invoice.pdf / extracted</text>
+<text x="28" y="488" fill="#dbe4f0">Invoice INV-2049 / Aurora rollout / Total EUR 1240.00</text>
+<text x="28" y="512" fill="#dbe4f0"></text>
+<text x="28" y="536" fill="#dbe4f0">REPLY=&quot;Thanks, I checked the invoice. Please confirm the payment date.&quot;</text>
+<text x="28" y="560" fill="#67e8f9">$ tbmail reply &quot;$REF&quot; --body &quot;$REPLY&quot; --json</text>
+<text x="28" y="584" fill="#dbe4f0">DRAFT=&quot;&lt;draft-id&gt;&quot; / status: prepared</text>
+<text x="28" y="608" fill="#dbe4f0">To: billing@example.test</text>
+<text x="28" y="632" fill="#dbe4f0">Subject: Re: Invoice for the Aurora rollout</text>
+<text x="28" y="656" fill="#dbe4f0"></text>
+<text x="28" y="680" fill="#67e8f9">$ tbmail send &quot;$DRAFT&quot; --json    # preview; no --confirm</text>
+<text x="28" y="704" fill="#86efac">preview: true / status: prepared</text>
+<text x="28" y="728" fill="#dbe4f0">Thanks, I checked the invoice. Please confirm the payment date.</text>
+<text x="28" y="752" fill="#dbe4f0"></text>
+<text x="28" y="776" fill="#86efac">Verified: PDF search -&gt; durable reference -&gt; thread -&gt; unsent reply.</text>
+<text x="28" y="800" fill="#94a3b8">Selected JSON fields shown; random draft ID normalized. Temporary mail removed.</text>
+</g>
+</svg>

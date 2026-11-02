@@ -38,3 +38,7 @@ jobs:
         run: uv run --locked python scripts/benchmark_search.py --require-recall 1 --require-precision 1 --require-no-false-positives
       - name: Build distributable package
         run: uv build
+      - name: Export locked installation constraints
+        run: uv export --locked --no-dev --no-emit-project --format requirements.txt --output-file "${RUNNER_TEMP}/thunderbird-constraints.txt"
+      - name: Install and exercise the wheel in a clean environment
+        run: uv run --locked python scripts/test_install.py --wheel dist/*.whl --constraints "${RUNNER_TEMP}/thunderbird-constraints.txt" --json

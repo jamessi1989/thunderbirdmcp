@@ -431,6 +431,8 @@ def reply_to_mail(reference: str, instructions: str) -> str:
 
 
 def main() -> None:
+    from .runtime import configure_session_environment
+    configure_session_environment()
     # Upgrade an existing index before read-only tools open it. Do not create an
     # empty database that would disguise a missing first-time index build.
     if _index.default_db_path().is_file():

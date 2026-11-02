@@ -1,0 +1,77 @@
+name: Installation feedback
+description: Report a successful install, a partial result, or an installation problem.
+title: "[Install]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Successful installations are useful reports too. Include only the checks you actually ran.
+        This issue is public: replace personal addresses, hostnames, usernames, and paths with placeholders.
+        Do not include mail, attachments, databases, credentials, full client configs, or unreviewed logs.
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Installation outcome
+      options:
+        - Installed and working for the checks below
+        - Partially working
+        - Installation failed
+    validations:
+      required: true
+  - type: input
+    id: project_version
+    attributes:
+      label: Thunderbird MCP version or Git commit
+      description: Use the release version or the output of git rev-parse --short HEAD.
+      placeholder: v0.3.1 or a commit hash
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Software versions and environment
+      description: Include versions when known; write not installed or unknown where appropriate. No account details are needed.
+      placeholder: |
+        OS/version and architecture:
+        Python version:
+        uv version:
+        Thunderbird version and install method (native, Flatpak, Snap, other):
+        Client(s) and version(s):
+        Model/provider, if relevant:
+    validations:
+      required: true
+  - type: textarea
+    id: install_commands
+    attributes:
+      label: Installation commands
+      description: Paste the commands you ran, replacing personal paths and any secret values with placeholders.
+      render: shell
+      placeholder: |
+        git clone https://github.com/jamessi1989/thunderbirdmcp.git
+        cd thunderbirdmcp
+        uv sync --locked
+        uv run thunderbird-mcp-setup --apply --clients codex
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Checks and results
+      description: Describe what passed, failed, or was not run. A real mailbox connection or test email is not required.
+      placeholder: |
+        Command setup:
+        Synthetic tests or demo:
+        Client lists the Thunderbird tools:
+        Synthetic client search/read/reference:
+        Optional readonly live mail check:
+        What did not work or was not tested:
+    validations:
+      required: true
+  - type: textarea
+    id: errors
+    attributes:
+      label: Sanitized errors or observations
+      description: Optional for a successful install. Review snippets for private values before posting; do not upload full mail/client logs.
+      render: text
+    validations:
+      required: false

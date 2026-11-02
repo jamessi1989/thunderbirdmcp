@@ -295,6 +295,8 @@ def render(result: dict, args: argparse.Namespace) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    from .runtime import configure_session_environment
+    configure_session_environment()
     try:
         result = dispatch(args)
     except (OSError, ValueError, RuntimeError, LookupError, sqlite3.Error) as error:

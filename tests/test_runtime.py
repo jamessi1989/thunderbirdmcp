@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+import io
 import os
 from pathlib import Path
 import socket
@@ -56,6 +58,31 @@ class SessionEnvironmentTests(unittest.TestCase):
             env = {}
             self.assertFalse(runtime.configure_session_environment(env))
         self.assertEqual(env, {})
+
+    def test_platform_without_getuid_does_not_invent_a_session(self):
+        with patch.object(runtime.os, "getuid", None):
+            env = {}
+            self.assertFalse(runtime.configure_session_environment(env))
+        self.assertEqual(env, {})
+
+    def test_console_entrypoints_restore_session_bus_before_mail_operations(self):
+        from thunderbird_mcp import cli, server
+
+        self.bus()
+        expected = "unix:path=" + str(self.root / "bus")
+
+        def check_bus(*args, **kwargs):
+            self.assertEqual(os.environ.get("DBUS_SESSION_BUS_ADDRESS"), expected)
+            return {"ok": True}
+
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.root)}, clear=True):
+            with patch.object(cli, "dispatch", side_effect=check_bus), redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["status"]), 0)
+
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.root)}, clear=True):
+            with patch.object(server._index, "default_db_path", return_value=self.root / "missing.sqlite"):
+                with patch.object(server.mcp, "run", side_effect=check_bus):
+                    server.main()
 
     def test_regular_file_and_missing_file_are_rejected(self):
         self.assertIsNone(runtime._session_bus(self.root, os.getuid()))

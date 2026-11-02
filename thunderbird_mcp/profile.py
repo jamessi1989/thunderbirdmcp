@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import os
+import sys
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,24 +12,28 @@ from pathlib import Path
 
 def _candidate_roots() -> list[Path]:
     home = Path.home()
-    return [
+    roots = [
         home / ".thunderbird",
         home / ".mozilla-thunderbird",
         home / "snap" / "thunderbird" / "common" / ".thunderbird",
         home / ".var" / "app" / "org.mozilla.Thunderbird" / ".thunderbird",
     ]
+    if sys.platform == "darwin":
+        roots.insert(0, home / "Library" / "Thunderbird")
+    return roots
 
 
 def find_profile() -> Path:
     """Return the path to the Thunderbird profile to index.
 
     Honours the TB_PROFILE env var (absolute path to a profile dir). Otherwise
-    reads profiles.ini and picks the default profile, preferring whichever
-    profile actually has mail on disk.
+    reads profiles.ini and picks the profile with the largest local mail store.
+    This avoids Thunderbird's empty default-profile stub. Set TB_PROFILE when
+    several populated profiles exist and a different one should be selected.
     """
     override = os.environ.get("TB_PROFILE")
     if override:
-        p = Path(override).expanduser()
+        p = Path(override).expanduser().absolute()
         if not p.is_dir():
             raise FileNotFoundError(f"TB_PROFILE is not a directory: {p}")
         return p
@@ -37,8 +42,12 @@ def find_profile() -> Path:
         ini = root / "profiles.ini"
         if not ini.is_file():
             continue
-        cfg = configparser.ConfigParser()
-        cfg.read(ini)
+        # Profile names and paths can contain literal percent signs.
+        cfg = configparser.ConfigParser(interpolation=None)
+        try:
+            cfg.read(ini, encoding="utf-8")
+        except (configparser.Error, UnicodeError, OSError):
+            raise ValueError(f"Could not read Thunderbird profiles.ini: {ini}. Set TB_PROFILE to the profile directory.") from None
 
         profiles: list[Path] = []
         for section in cfg.sections():

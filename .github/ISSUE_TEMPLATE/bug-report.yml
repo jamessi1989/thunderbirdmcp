@@ -1,0 +1,53 @@
+name: Bug report
+description: Describe a reproducible problem using sanitized or synthetic examples.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For installation successes or failures, use the Installation feedback form.
+        This issue is public. Use fictional mail and redact private addresses, hosts, paths, tokens, and passwords.
+        Do not upload original mail, attachments, databases, full client configuration, or unreviewed logs.
+        A bug report does not require sending mail or retrying an uncertain delivery.
+  - type: input
+    id: project_version
+    attributes:
+      label: Thunderbird MCP version or Git commit
+      placeholder: v0.3.1 or a commit hash
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Relevant software versions
+      placeholder: |
+        OS/version and architecture:
+        Python and uv versions:
+        Thunderbird version (if relevant):
+        Client/version and model/provider (if relevant):
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the command or tool name and a small synthetic example. Authentication reports need only the protocol, auth type, and redacted error.
+      placeholder: |
+        1. Prepare this fictional message or configuration...
+        2. Run this command or tool...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include only a reviewed, sanitized error snippet if available.
+    validations:
+      required: true

@@ -143,6 +143,21 @@ def _read(path: Path) -> bytes | None:
     return path.read_bytes() if path.exists() else None
 
 
+def _installed_entrypoint(path: Path, python: Path, module: str) -> bool:
+    """Recognize uv-tool/pipx links to this environment without replacing them."""
+    if not path.is_symlink():
+        return False
+    expected = python.parent / path.name
+    try:
+        if expected.is_symlink() or not expected.is_file() or not os.access(expected, os.X_OK):
+            return False
+        if path.resolve(strict=True) != expected.resolve(strict=True):
+            return False
+        return any(line.strip() == f"from {module} import main" for line in expected.read_text(encoding="utf-8").splitlines())
+    except (OSError, UnicodeError, RuntimeError):
+        return False
+
+
 def _client_path(client: str, home: Path, use_env: bool) -> Path:
     env = os.environ if use_env else {}
     if client == "claude":
@@ -218,10 +233,18 @@ def build_plan(
     ``report`` is safe to print; ``changes`` contains private config contents and
     must never be printed or logged.
     """
-    project = (project or Path(__file__).resolve().parent.parent).absolute()
+    if os.name != "posix":
+        raise ValueError("Setup currently installs POSIX launchers for Linux/macOS; Windows integration is not supported.")
+    explicit_project = project is not None
+    project = (project or Path(__file__).resolve().parent.parent).expanduser().absolute()
     use_env = home is None
-    home = (home or Path.home()).absolute()
-    python = (python or project / ".venv/bin/python").absolute()
+    home = (home or Path.home()).expanduser().absolute()
+    checkout_python = project / ".venv/bin/python"
+    if python is None:
+        # A wheel/pipx installation has no checkout-local .venv. Its running
+        # interpreter already contains this package and all its dependencies.
+        python = checkout_python if checkout_python.is_file() or explicit_project else Path(sys.executable)
+    python = python.expanduser().absolute()
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ValueError(f"Python environment is missing: {python}. Run uv sync in {project} first.")
     if not (project / "thunderbird_mcp/server.py").is_file():
@@ -245,7 +268,11 @@ def build_plan(
             changes.append({"path": str(path), "before": before, "after": after, "mode": mode})
 
     for name, module in (("thunderbird-mcp", "thunderbird_mcp.server"), ("tbmail", "thunderbird_mcp.cli"), ("thunderbird-mail", "thunderbird_mcp.cli"), ("thunderbird-mcp-setup", "thunderbird_mcp.setup")):
-        add(bin_dir / name, _launcher(python, module, project), 0o755, "command")
+        path = bin_dir / name
+        if _installed_entrypoint(path, python, module):
+            report["files"].append({"path": str(path), "kind": "command", "changed": False, "preserved_entrypoint": True})
+        else:
+            add(path, _launcher(python, module, project), 0o755, "command")
     for client in dict.fromkeys(clients):
         path = _client_path(client, home, use_env)
         before = _read(path)
@@ -256,7 +283,7 @@ def build_plan(
         report["notes"].extend(notes)
     if str(bin_dir) not in os.environ.get("PATH", "").split(os.pathsep):
         report["notes"].append(f"Add {bin_dir} to PATH to run tbmail by name; MCP uses an absolute command.")
-    report["notes"].append("Existing agent sessions load MCP configuration on restart; use tbmail immediately from their shell tools.")
+    report["notes"].append("Reconnect or reload MCP in an existing agent session after setup; restart it if the client cannot reload. Use tbmail immediately from shell tools. See https://github.com/jamessi1989/thunderbirdmcp#reload-an-existing-session.")
     report["change_count"] = len(changes)
     return {"report": report, "changes": changes}
 
@@ -304,8 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true", help="Install commands and register selected clients (default: preview)")
     parser.add_argument("--clients", nargs="+", choices=(*CLIENTS, "none"), help="Clients to configure; defaults to installed CLIs")
     parser.add_argument("--home", type=Path, help="Alternate user home, useful for preview/testing")
-    parser.add_argument("--project", type=Path, help="Source checkout containing .venv")
-    parser.add_argument("--python", type=Path, help="Override the checkout's .venv/bin/python")
+    parser.add_argument("--project", type=Path, help="Optional source checkout; installed packages use their own interpreter")
+    parser.add_argument("--python", type=Path, help="Override the selected Python interpreter")
     args = parser.parse_args(argv)
     if args.clients and "none" in args.clients and len(args.clients) > 1:
         parser.error("--clients none cannot be combined with client names")

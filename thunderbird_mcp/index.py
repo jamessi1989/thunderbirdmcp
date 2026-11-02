@@ -110,7 +110,20 @@ def default_db_path() -> Path:
     override = os.environ.get("TB_MAIL_INDEX_DB")
     if override:
         return Path(override).expanduser()
-    return Path(__file__).resolve().parent.parent / "mail-index.sqlite"
+    root = Path(__file__).resolve().parent.parent
+    if (root / "pyproject.toml").is_file():
+        # Keep existing source checkouts and their stable message ids unchanged.
+        return root / "mail-index.sqlite"
+    # Installed wheels must not write private data into site-packages, which
+    # may be read-only or replaced during an upgrade.
+    override_root = os.environ.get("XDG_DATA_HOME")
+    if override_root and Path(override_root).expanduser().is_absolute():
+        data = Path(override_root).expanduser()
+    elif sys.platform == "darwin":
+        data = Path.home() / "Library" / "Application Support"
+    else:
+        data = Path.home() / ".local" / "share"
+    return data / "thunderbird-mcp" / "mail-index.sqlite"
 
 
 def connect(db_path: Path | None = None, *, read_only: bool = False) -> sqlite3.Connection:

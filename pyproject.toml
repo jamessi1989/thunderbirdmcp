@@ -1,9 +1,23 @@
 [project]
 name = "thunderbird-mcp"
-version = "0.3.0"
-description = "Search, reference, read, and send Thunderbird mail from terminal MCP clients"
+version = "0.3.1"
+description = "Search and reference Thunderbird mail and attachments from coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "jamessi1989 and contributors"}]
+keywords = ["thunderbird", "mcp", "email", "imap", "attachments", "semantic-search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Email",
+]
 dependencies = [
     "fastembed>=0.8.1",
     "keyring>=25.7.0",
@@ -15,6 +29,13 @@ dependencies = [
     "defusedxml>=0.7.1,<1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jamessi1989/thunderbirdmcp"
+Documentation = "https://github.com/jamessi1989/thunderbirdmcp#readme"
+Repository = "https://github.com/jamessi1989/thunderbirdmcp"
+Issues = "https://github.com/jamessi1989/thunderbirdmcp/issues"
+Changelog = "https://github.com/jamessi1989/thunderbirdmcp/blob/main/CHANGELOG.md"
+
 [project.scripts]
 thunderbird-mcp = "thunderbird_mcp.server:main"
 thunderbird-mcp-index = "thunderbird_mcp.index:cli"
@@ -25,8 +46,15 @@ tbmail = "thunderbird_mcp.cli:main"
 thunderbird-mcp-setup = "thunderbird_mcp.setup:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["thunderbird_mcp"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "thunderbird_mcp", "scripts", "tests", "systemd", "docs", ".github",
+    "README.md", "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md",
+    "pyproject.toml", "uv.lock",
+]
