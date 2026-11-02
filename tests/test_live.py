@@ -69,10 +69,12 @@ class LiveTests(unittest.TestCase):
         self.config = {"account_id": "account2", "imap_host": "imap.example.test",
                        "imap_port": 993, "imap_user": "reader@example.test"}
         self.connection = FakeIMAP()
-        self.account_mock = self.enterContext(patch.object(live.outgoing, "account_config", return_value=self.config))
-        self.enterContext(patch.object(live.imap, "session", side_effect=lambda **kw: contextlib.nullcontext(self.connection)))
-        self.enterContext(patch.object(live.index, "find_profile", return_value=self.profile))
-        self.enterContext(patch.object(live.outgoing, "_prefs", return_value={}))
+        contexts = contextlib.ExitStack()
+        self.addCleanup(contexts.close)
+        self.account_mock = contexts.enter_context(patch.object(live.outgoing, "account_config", return_value=self.config))
+        contexts.enter_context(patch.object(live.imap, "session", side_effect=lambda **kw: contextlib.nullcontext(self.connection)))
+        contexts.enter_context(patch.object(live.index, "find_profile", return_value=self.profile))
+        contexts.enter_context(patch.object(live.outgoing, "_prefs", return_value={}))
         self.locator = live.Locator("account2", live._fingerprint(self.config), "INBOX", 1234, 7)
         self.reference = self.locator.reference
 
