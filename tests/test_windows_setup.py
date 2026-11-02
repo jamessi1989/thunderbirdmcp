@@ -31,6 +31,11 @@ class WindowsSetupTests(unittest.TestCase):
         self.platform = patch.object(setup.sys, "platform", "win32")
         self.platform.start()
         self.addCleanup(self.platform.stop)
+        # Python 3.12's shutil.which uses _winapi when sys.platform is mocked.
+        # Installed-client discovery is unrelated to these explicit selections.
+        discovery = patch.object(setup.shutil, "which", return_value=None)
+        discovery.start()
+        self.addCleanup(discovery.stop)
 
     def plan(self):
         return setup.build_plan(home=self.home, project=self.project, python=Path(sys.executable),
