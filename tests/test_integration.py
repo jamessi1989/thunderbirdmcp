@@ -184,7 +184,7 @@ command = "keep"
         link.symlink_to(target)
         with self.assertRaisesRegex(ValueError, "symlink"):
             self.plan(["claude"])
-        self.assertEqual(link.resolve(), target)
+        self.assertEqual(link.resolve(), target.resolve())
 
 
 if __name__ == "__main__":

@@ -47,9 +47,20 @@ class InstalledDataTests(unittest.TestCase):
 
     def test_source_checkout_and_explicit_database_paths_remain_unchanged(self):
         (self.package.parent / "pyproject.toml").write_text('[project]\nname="thunderbird-mcp"\n', encoding="utf-8")
-        self.assertEqual(index.default_db_path(), self.package.parent / "mail-index.sqlite")
+        self.assertEqual(index.default_db_path(), self.package.parent.resolve() / "mail-index.sqlite")
         with patch.dict(os.environ, {"TB_MAIL_INDEX_DB": str(self.home / "explicit.sqlite")}):
             self.assertEqual(index.default_db_path(), self.home / "explicit.sqlite")
+
+    def test_symlinked_checkout_uses_physical_database_but_preserves_explicit_override(self):
+        (self.package.parent / "pyproject.toml").write_text('[project]\nname="thunderbird-mcp"\n', encoding="utf-8")
+        alias = self.root / "checkout alias"
+        alias.symlink_to(self.package.parent, target_is_directory=True)
+        with patch.object(index, "__file__", str(alias / "thunderbird_mcp/index.py")):
+            self.assertEqual(index.default_db_path(), self.package.parent.resolve() / "mail-index.sqlite")
+            override = alias / "explicit.sqlite"
+            with patch.dict(os.environ, {"TB_MAIL_INDEX_DB": str(override)}):
+                self.assertEqual(index.default_db_path(), override)
+                self.assertNotEqual(index.default_db_path(), override.resolve())
 
     def test_isolated_environment_does_not_copy_credentials_or_personal_paths(self):
         with patch.dict(os.environ, {"TB_IMAP_PASSWORD": "do-not-copy", "CODEX_HOME": "/private/config",
