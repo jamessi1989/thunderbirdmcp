@@ -18,15 +18,31 @@ uv run thunderbird-mcp-setup --apply
 
 Setup installs `tbmail`, `thunderbird-mail`, `thunderbird-mcp`, and
 `thunderbird-mcp-setup` in `~/.local/bin`. It registers the MCP in the global
-configuration of installed Claude Code, Codex, OpenCode, and Antigravity clients.
+configuration of installed Claude Code, Codex, OpenCode, Antigravity, and Gemini
+CLI clients.
 Use `--clients claude codex` to select clients, or `--clients none` to install
 only commands. Run setup without `--apply` to inspect changes. Existing settings
 are preserved and changed files receive private timestamped backups. Repeating
 setup is safe. MCP launchers use absolute paths and preserve your current directory.
 
-Restart the agent in an existing Terminalman session to load its new MCP tools;
-the Terminalman server itself does not need a restart. `tbmail` is immediately
-available through the shell, including from an already running agent.
+Existing Terminalman sessions can load the tools using the
+[client reload steps below](#reload-an-existing-session). The Terminalman server
+does not need a restart. `tbmail` is immediately available through the shell,
+including from an already running agent.
+
+Setup uses these default client configuration files:
+
+| Client (`--clients` name) | Global configuration |
+| --- | --- |
+| Claude Code (`claude`) | `~/.claude.json` |
+| Codex (`codex`) | `~/.codex/config.toml` |
+| OpenCode, including GLM (`opencode`) | `~/.config/opencode/opencode.jsonc` if present, otherwise `opencode.json` in the same directory |
+| Antigravity (`agy`) | `~/.gemini/config/mcp_config.json` |
+| Gemini CLI (`gemini`) | `~/.gemini/settings.json` |
+
+Setup respects `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_CONFIG_HOME` for their
+respective clients. OpenCode uses the same MCP registration for all models;
+no separate GLM server configuration is needed.
 
 You can then ask:
 
@@ -48,10 +64,50 @@ claude mcp get thunderbird
 opencode mcp list
 ```
 
-In a new client session, ask: “Use the thunderbird MCP to search my mail for
+After connecting or reloading, ask: “Use the thunderbird MCP to search my mail for
 invoices, read the most relevant result, and give me its stable reference.”
 Codex and Claude also show active MCP connections with `/mcp`. OpenCode's MCP
-configuration applies to whichever model you select, including GLM.
+status is available through **Toggle MCPs** in the command palette.
+
+### Reload an existing session
+
+After updating the checkout and running `uv sync --locked` and
+`uv run thunderbird-mcp-setup --apply`, refresh each running client's connection:
+
+| Client | Reload without losing the conversation |
+| --- | --- |
+| Claude Code | Run `/mcp`, select `thunderbird`, and choose **Reconnect**. Open `/mcp` again to check that it is connected and lists **23 tools**. |
+| OpenCode | Press **Ctrl+P**, choose **Toggle MCPs**, select `thunderbird`, then press **Space** to disable it and **Space** again to enable it. Check that it shows **connected**. |
+| Codex | An existing app-server connection can reload its loaded threads using the protocol below. For a CLI session without that connection, wait until idle, use `/exit`, then run `codex resume --last` from the same project and check `/mcp`. |
+
+Claude and OpenCode reconnects and Codex app-server reloads were verified in
+running Terminalman sessions on 2026-11-02; the conversations were preserved.
+
+<details>
+<summary>Codex app-server integration: reload active threads</summary>
+
+Verified with Codex CLI 0.166.0. A host connected to the existing app-server can
+send these requests after the `initialize` / `initialized` handshake. The
+verified connection enabled `capabilities.experimentalApi` during initialization.
+Use the server that owns the active thread; a separate server has separate
+connections.
+
+```jsonl
+{"id":1,"method":"config/mcpServer/reload","params":null}
+{"id":2,"method":"mcpServerStatus/list","params":{"threadId":"<active-thread-id>","serverName":"thunderbird","detail":"toolsAndAuthOnly"}}
+```
+
+Reload reads configuration from disk and queues a refresh for loaded threads.
+Check the status response again after the refresh completes; the `thunderbird`
+tool inventory should contain 23 tools. The
+[Codex app-server protocol](https://learn.chatgpt.com/docs/app-server) documents
+the connection transport, handshake, reload request, and status query.
+The [Codex CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+documents `/mcp` and conversation resumption.
+
+</details>
+
+### Test actual client tool calls
 
 An opt-in test checks actual model tool calls in all three clients:
 
@@ -93,6 +149,7 @@ tbmail export 12345 ./message.eml
 tbmail export-attachment 12345 1 ./attachment.pdf
 tbmail reindex                         # Refresh downloaded mail
 tbmail --json search 'invoice'          # Structured output for scripts/agents
+tbmail folders --account account2       # Folders in the local index
 tbmail folders --live --account account2
 ```
 
@@ -100,8 +157,9 @@ Pass a returned `thunderbird://message/...` reference in place of a numeric ID
 to read, thread, reference, reply, attachment, and export commands. Stable
 references use Message-ID, with a content hash fallback, and survive reindexing
 and folder changes. Integer IDs also stay stable during ordinary refreshes, but
-use the URI for references saved in another project or conversation. The search
-web app has a **Copy mail reference** button.
+use the URI for references saved in another project or conversation. Paste it
+into another Terminalman conversation and ask the agent to read it with the
+thunderbird MCP. The search web app has a **Copy mail reference** button.
 
 Live searches return `thunderbird://imap/...` references. The same read, thread,
 reference, reply, attachment, and export commands accept them without a local
@@ -112,7 +170,9 @@ must survive folder moves.
 
 For rare messages without Message-ID, the fallback hashes the indexed headers
 and text. Messages with identical indexed text but different attachments can
-share that fallback reference; use a local numeric ID to select the exact copy.
+share that fallback reference. A numeric ID selects the indexed row, but source
+recovery after mailbox compaction can still be ambiguous. Use Thunderbird to
+inspect the original copies in that case.
 
 ```bash
 tbmail draft --to colleague@example.org --subject 'Migration update' \
@@ -150,6 +210,8 @@ authenticate and issue NOOP without sending anything.
 
 ## MCP interface
 
+The server exposes **23 tools, 3 resource URI patterns, and 2 prompts**.
+
 | Workflow | Tools |
 | --- | --- |
 | Health and search | `mail_status`, `list_accounts`, `search_email`, `search_live_email`, `list_folders`, `reindex` |
@@ -166,13 +228,16 @@ untrusted data. The server uses stdio; protocol stdout contains only MCP message
 
 ## Search and indexing
 
-Local search combines FTS5 keywords, common-word typo correction, multilingual local embeddings,
-recency, and optional conversation deduplication. Filters include `from:`, `to:`,
-`folder:`, `after:YYYY-MM-DD`, `before:YYYY-MM-DD`, `has:attachment`, and
-`attachment:filename`; `before:` is exclusive.
+Local search combines FTS5 keywords, common-word typo correction, multilingual
+local embeddings, recency, and optional conversation deduplication. Filters
+include `from:`, `to:`, `folder:`, `after:YYYY-MM-DD`, `before:YYYY-MM-DD`,
+`has:attachment`, and `attachment:filename`; `before:` is exclusive.
 The separate `since`/`until` parameters accept dates, with `until` including that
 whole day. Empty search lists recent mail. `semantic=False`/`--keyword` uses only
 keywords; search diagnostics explain when semantic search is unavailable.
+The initial `thunderbird-mcp-index` command builds the keyword index. Run the
+embedding command separately to enable semantic retrieval; its first run may
+download the embedding model.
 
 ```bash
 uv run thunderbird-mcp-embed            # Incremental semantic vectors
@@ -182,34 +247,38 @@ uv run thunderbird-mail-web            # Default: http://127.0.0.1:3458
 The local index reads Thunderbird's **downloaded mbox mail**. Thunderbird must
 sync new messages and folders before local search can find them. Refreshing
 this index does not fetch mail from IMAP. Local exports need the local original;
-live references fetch their original from IMAP. Reads do not change read/unread flags. Bodies are indexed
-up to 50,000 characters, with truncation reported. Export original `.eml` files
-for complete local content. Exports do not overwrite existing files or write
-inside Thunderbird mail storage.
+live references fetch their original from IMAP. Reads do not change read/unread
+flags. Bodies are indexed up to 50,000 characters, with truncation reported.
+Export original `.eml` files for complete local content. Exports do not overwrite
+existing files or write inside Thunderbird mail storage.
 
 `search_live_email` / `tbmail search --live` searches one server folder, default
-INBOX. Words and quoted phrases use IMAP text matching; header/date filters and
-`--unread`/`--read` are supported. Live dates use the message header's calendar
-day. Results are headers, ordered by newest UID, and report omitted matches.
+INBOX. Words and quoted phrases use IMAP text matching and combine with AND;
+header/date filters and `--unread`/`--read` are supported. Live dates require
+`YYYY-MM-DD` and use the message header's calendar day; timestamps are rejected.
+Results are headers, ordered by newest UID, and report omitted matches.
 Live threads follow reply headers within that folder, bounded to 100 candidates
-and 40 searches. Raw live messages and combined thread bodies are capped at
-25 MiB. Live search does not provide semantic ranking or extracted document text
-search; those use the local index.
+and 40 searches. Each live message and the combined raw MIME downloaded for a
+thread, including attachments, are capped at 25 MiB. Live search does not provide
+semantic ranking or extracted document text search; those use the local index.
 
 Attachment text search supports TXT/CSV/JSON and other text formats, HTML/XML,
 PDF, DOCX, XLSX, and PPTX. Filenames remain searchable when text extraction is
 unsupported. `get_attachment_text` / `tbmail attachment-text` reads a selected
-attachment, including from live mail. Results report `extracted`, `empty`,
-`unsupported`, `encrypted`, `too_large`, `error`, or `too_many`, plus truncation.
+attachment, including from live mail. Extraction reports `extracted`, `empty`,
+`unsupported`, `encrypted`, `too_large`, or `error`, plus truncation. Indexing
+also reports `too_many` when the attachment-count limit is exceeded.
 Scanned PDFs need OCR, which is not included.
 
-Extraction limits are 8 MiB per attachment, 24 MiB decoded bytes and 64
-attachments per message, 25,000 text characters per attachment, and 100,000
-per message. Office archives are limited to 16 MiB expanded and 2,048 entries.
+Extraction limits are 8 MiB and 25,000 text characters per attachment. Indexing
+also caps each message at 24 MiB decoded bytes, 64 attachments, and 100,000 text
+characters. `get_attachment_text` extracts only the requested attachment.
+Office archives are limited to 16 MiB expanded and 2,048 entries.
 PDFs are limited to 50 pages and a ten-second child process; POSIX systems also
-apply a CPU limit, and Linux caps process address space at 512 MiB. Macros and external links are never executed
-by extraction. No document content is uploaded for indexing. Mail text returned
-to a hosted AI client is sent to that client's model provider.
+apply a CPU limit, and Linux caps process address space at 512 MiB. Macros and
+external links are never executed by extraction. No document content is uploaded
+for indexing. Mail text returned to a hosted AI client is sent to that client's
+model provider.
 
 Schema upgrades retain existing messages. Refreshes preserve IDs, skip expunged
 messages, and commit each folder atomically; if Thunderbird changes a folder
@@ -226,10 +295,10 @@ Large full refreshes or embedding rebuilds can exceed an AI client's MCP tool
 timeout; run those through `tbmail reindex --embeddings` or the background
 service. Ordinary local searches remain available while backfilling.
 
-Systemd units in `systemd/` refresh the index and embeddings ten minutes after each completed run
-and run the existing authenticated web app. The web app loads no external page
-assets and renders mail as plain text. It has keyboard navigation (`/`, `j`,
-`k`, `o`) and optional cross-encoder reranking. Web credentials use the
+Systemd units in `systemd/` refresh the index and embeddings ten minutes after
+each completed run and run the existing authenticated web app. The web app loads
+no external page assets and renders mail as plain text. It has keyboard navigation
+(`/`, `j`, `k`, `o`) and optional cross-encoder reranking. Web credentials use the
 `thunderbird-mail-web` keyring service. The supplied service binds to loopback.
 To use a private network address, set `MAIL_WEB_HOST` in a local systemd override.
 Adjust `WorkingDirectory` if the checkout is outside `~/projects/thunderbirdmcp`.
@@ -277,9 +346,10 @@ does not inherit another account's host, sender, or credentials.
 
 Sending supports international display names and ASCII mailbox addresses.
 Outgoing attachments are capped at 25 MiB total; local MIME export at 100 MiB.
-IMAP operations accept an account selector. Local account filtering uses its
-Thunderbird storage directory. Never put credentials, exported mail,
-or index/outbox databases in source control.
+Account selectors accept a Thunderbird account ID or a unique primary identity
+email configured in Thunderbird. Use the account ID when overriding the sending
+address. Local account filtering uses its Thunderbird storage directory. Never
+put credentials, exported mail, or index/outbox databases in source control.
 
 ## OAuth accounts
 
@@ -334,6 +404,13 @@ Linux (Python 3.10–3.12) and macOS (Python 3.12). Live credentials and paid AI
 clients are not used by CI. Automatic client setup and systemd integration were
 developed for Linux; a macOS unit-test result is not a full desktop integration
 test. Windows deployment is not yet verified.
+
+For v0.3.0, all 162 tests, the keyword benchmark, and package builds passed on
+the full matrix in [GitHub Actions](https://github.com/jamessi1989/thunderbirdmcp/actions/runs/41479433495).
+Local verification on 2026-11-02 also covered Codex, Claude Code, and OpenCode
+with GLM calling the tools against synthetic mail, session reconnects, read-only
+live IMAP access with unchanged read flags, and attachment text retrieval.
+These checks did not send mail.
 
 The benchmark generates 78 messages with 13 labeled query cases and distractors
 outside each filter's scope. It reports recall@k, returned-result precision,
