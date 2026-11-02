@@ -1,17 +1,26 @@
 # thunderbird-mcp
 
-**Search and reference your Thunderbird mail from coding agents.**
+**Read, search, organize, and send Thunderbird mail from your AI tools.**
 
 [![Mail MCP checks](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml/badge.svg)](https://github.com/jamessi1989/thunderbirdmcp/actions/workflows/checks.yml)
 [Demo](docs/demo.md) · [Installation guide](docs/installation.md) ·
 [Releases](https://github.com/jamessi1989/thunderbirdmcp/releases) ·
 [Report your installation](https://github.com/jamessi1989/thunderbirdmcp/issues/new?template=installation-feedback.yml)
 
-Find a phrase inside a PDF or Office attachment, carry a mail reference into
-another project, and prepare a reply from Claude Code, Codex, OpenCode, Terminalman,
-or a normal shell. The local index searches downloaded mail by keywords or meaning;
-live IMAP search finds mail that Thunderbird has not downloaded yet. Sending uses
-saved drafts, SMTP, and credentials kept in the system keyring.
+Work with your mail from Claude Code, Codex, OpenCode, Terminalman, or a normal
+shell. The MCP exposes 23 tools across these workflows:
+
+| Workflow | Available now |
+| --- | --- |
+| Read and find | Read messages and threads; search downloaded mail by keywords or meaning; search fresh mail over IMAP; find text inside PDF and Office attachments. |
+| Compose and send | Prepare new messages with To/Cc/Bcc and attachments; draft replies and reply-all; review and send saved drafts with duplicate-send protection. |
+| Organize | List and create IMAP folders, preview and execute bulk moves of indexed messages, and undo recorded move batches. |
+| Reference and export | Reuse mail references across projects and sessions; export original messages and individual attachments. |
+| Accounts and diagnostics | Select accounts per operation, check connection/index health, and refresh the local search index. |
+
+Sending uses SMTP and credentials kept in the system keyring. The demo below
+shows one workflow: finding a PDF invoice, reusing its reference, and preparing
+an unsent reply.
 
 ![Synthetic demo: search an invoice attachment, reuse a mail reference, and prepare an unsent reply](docs/demo.svg)
 
@@ -77,6 +86,9 @@ You can then ask:
 - “Read that conversation and give me a reference I can use in another session.”
 - “Prepare a reply to this mail saying the migration is complete.”
 - “Send draft `<draft-id>`.”
+- “List my folders and preview moving those messages into Archive.”
+- “Undo that move batch.”
+- “Export that message and its PDF attachment to this project.”
 
 ## Check Codex, Claude, and OpenCode
 
@@ -250,6 +262,11 @@ Resources: `thunderbird://status`, `thunderbird://message/{key}`, and
 Prompts: `find_mail(query)` and `reply_to_mail(reference, instructions)`.
 Tools have read/write annotations. Mail and attachment content is treated as
 untrusted data. The server uses stdio; protocol stdout contains only MCP messages.
+
+The current interface has no dedicated tools for forwarding, changing read/unread
+or flagged status, permanent deletion, scheduled sending, contacts, calendars,
+or Thunderbird message filters. Folder moves and their undo operations act on
+indexed messages; live-only references cannot be passed directly to `move_emails`.
 
 ## Search and indexing
 
