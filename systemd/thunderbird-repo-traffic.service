@@ -1,0 +1,13 @@
+[Unit]
+Description=Save private Thunderbird MCP GitHub traffic history
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 "%h/projects/thunderbirdmcp/scripts/repo_traffic.py" collect
+UMask=0077
+TimeoutStartSec=240
+Restart=on-failure
+RestartSec=900

@@ -16,6 +16,7 @@ Codex, Claude Code, OpenCode and Terminalman.
 | Check implemented roadmap work and remaining verification | [Implementation record](implementation-status.md) |
 | See changes by version | [Changelog](../CHANGELOG.md) |
 | Run checks or contribute | [Contributing](../CONTRIBUTING.md) |
+| Preserve GitHub traffic and release download history | [Repository traffic](repository-traffic.md) |
 
 Download published artifacts from
 [GitHub Releases](https://github.com/jamessi1989/thunderbirdmcp/releases).
